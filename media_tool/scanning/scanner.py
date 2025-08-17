@@ -219,6 +219,17 @@ class OptimizedScanner:
             print(f"[{utc_now_str()}] Skipping feature extraction (already completed)")
             return self._load_records_from_db(drive_id, str(config.get('source_path', '')))
         
+        with self.db_manager.get_connection() as conn:
+            existing_count = conn.execute("""
+                SELECT COUNT(*) FROM files WHERE drive_id = ?
+            """, (drive_id,)).fetchone()[0]
+        
+        if existing_count >= len(candidates):
+            print(f"[{utc_now_str()}] Files already processed ({existing_count} files in DB), skipping extraction and grouping")
+            print(f"  - Candidates to process: {len(candidates)}")
+            print(f"  - Files already in DB: {existing_count}")
+            return self._load_records_from_db(drive_id, str(config.get('source_path', '')))
+
         start_batch = checkpoint.batch_number if checkpoint and checkpoint.stage == 'extraction' else 0
         return self._extract_features_with_checkpoint(
             candidates, drive_id, hash_large, io_workers, max_phash_pixels,
@@ -233,6 +244,20 @@ class OptimizedScanner:
             print(f"[{utc_now_str()}] Skipping grouping (scan already completed)")
             return
         
+        if records:  # Make sure we have records to check
+            with self.db_manager.get_connection() as conn:
+                # Check how many files are already grouped
+                grouped_count = conn.execute("""
+                    SELECT COUNT(*) FROM files 
+                    WHERE drive_id = ? AND group_id IS NOT NULL
+                """, (records[0].drive_id,)).fetchone()[0]
+                
+                if grouped_count >= len(records):
+                    print(f"[{utc_now_str()}] Files already grouped ({grouped_count} files), skipping grouping stage")
+                    print(f"  - Records to group: {len(records)}")
+                    print(f"  - Files already grouped: {grouped_count}")
+                    return  # Exit early, don't do any grouping
+
         # Save grouping checkpoint
         if auto_checkpoint:
             grouping_checkpoint = ScanCheckpoint(
@@ -435,56 +460,132 @@ class OptimizedScanner:
         """Process records for duplicates and create groups."""
         print(f"[{utc_now_str()}] Analyzing {len(records):,} records for duplicates...")
         
-        # Categorize records
-        large_files = []
-        similar_groups = []
-        new_originals = []
+        # Group similar files within the current batch (FIXED LOGIC)
+        groups = self._group_similar_records(records, phash_threshold)
         
-        processed = 0
-        start_time = time.perf_counter()
+        print(f"[{utc_now_str()}] Grouping complete:")
+        
+        duplicate_groups = [g for g in groups if len(g) > 1] 
+        single_files = [g for g in groups if len(g) == 1]
+        
+        print(f"  - Groups with duplicates: {len(duplicate_groups)}")
+        print(f"  - Single files: {len(single_files)}")
+        
+        # Process groups
+        total_duplicates = 0
+        for group_records in duplicate_groups:
+            total_duplicates += len(group_records) - 1  # All but one are duplicates
+            self._create_group_from_records(group_records)
+        
+        # Process single files
+        for group_records in single_files:
+            self._create_group_from_records(group_records)
+        
+        print(f"  - Total duplicates found: {total_duplicates}")
+        print(f"[{utc_now_str()}] Database updates complete")
+
+    def _group_similar_records(self, records: List[FileRecord], phash_threshold: int) -> List[List[FileRecord]]:
+        """Group similar records within the batch."""
+        
+        # Group by SHA-256 first (exact duplicates)
+        from collections import defaultdict
+        import imagehash
+        
+        sha_groups = defaultdict(list)
+        no_sha_records = []
         
         for record in records:
-            processed += 1
-            
-            if record.is_large and not record.sha256:
-                large_files.append(record)
+            if record.sha256:
+                sha_groups[record.sha256].append(record)
             else:
-                existing_group = self.duplicate_detector.find_duplicate_group(record, phash_threshold)
+                no_sha_records.append(record)
+        
+        # Group by perceptual hash
+        phash_groups = defaultdict(list)  
+        no_phash_records = []
+        
+        for record in no_sha_records:
+            if record.phash and record.file_type == 'image':
+                phash_groups[record.phash].append(record)
+            else:
+                no_phash_records.append(record)
+        
+        # Find similar pHash groups
+        similar_phash_groups = []
+        processed_phashes = set()
+        
+        for phash1, records1 in phash_groups.items():
+            if phash1 in processed_phashes:
+                continue
                 
-                if existing_group:
-                    similar_groups.append((record, existing_group))
-                else:
-                    new_originals.append(record)
+            similar_group = records1.copy()
+            processed_phashes.add(phash1)
             
-            # Progress updates
-            if processed % 2000 == 0:
-                elapsed = time.perf_counter() - start_time
-                rate = processed / elapsed if elapsed > 0 else 0
-                print(f"  - Analyzed {processed:,}/{len(records):,} records ({rate:.0f}/s)", flush=True)
+            for phash2, records2 in phash_groups.items():
+                if phash2 in processed_phashes:
+                    continue
+                    
+                try:
+                    hash1 = imagehash.hex_to_hash(phash1)
+                    hash2 = imagehash.hex_to_hash(phash2)
+                    distance = hash1 - hash2
+                    
+                    if distance <= phash_threshold:
+                        similar_group.extend(records2)
+                        processed_phashes.add(phash2)
+                except Exception:
+                    continue
+            
+            similar_phash_groups.append(similar_group)
         
-        elapsed = time.perf_counter() - start_time
-        rate = processed / elapsed if elapsed > 0 else 0
+        # Collect all groups
+        all_groups = []
         
-        print(f"[{utc_now_str()}] Duplicate analysis complete ({rate:.0f} records/s):")
-        print(f"  - Large files: {len(large_files):,}")
-        print(f"  - Files joining existing groups: {len(similar_groups):,}")
-        print(f"  - New originals: {len(new_originals):,}")
+        # Add SHA groups
+        for group_records in sha_groups.values():
+            all_groups.append(group_records)
         
-        # Process each category
-        if large_files:
-            self._batch_insert_large_files(large_files)
+        # Add pHash groups  
+        all_groups.extend(similar_phash_groups)
         
-        if new_originals:
-            self._create_new_groups(new_originals)
+        # Add single files
+        for record in no_phash_records:
+            all_groups.append([record])
         
-        if similar_groups:
-            self._process_similar_files(similar_groups)
+        return all_groups
+
+    def _create_group_from_records(self, group_records: List[FileRecord]):
+        """Create a group from similar records."""
+        if not group_records:
+            return
         
-        # Generate reports
-        if large_files:
-            self._generate_large_files_review(large_files)
+        # Find the best original (largest resolution, then largest file size)
+        original_record = max(group_records, key=lambda r: (r.pixels, r.size_bytes))
         
-        print(f"[{utc_now_str()}] Database updates complete")
+        with self.db_manager.get_connection() as conn:
+            # Insert all files first
+            file_ids = []
+            for record in group_records:
+                file_id = self._insert_or_get_file(conn, record)
+                file_ids.append(file_id)
+            
+            # Create group with best original
+            original_file_id = file_ids[group_records.index(original_record)]
+            group_cursor = conn.execute("INSERT INTO groups (original_file_id) VALUES (?)", (original_file_id,))
+            group_id = group_cursor.lastrowid
+            
+            # Update all files in group
+            for file_id, record in zip(file_ids, group_records):
+                if file_id == original_file_id:
+                    # This is the original
+                    conn.execute("UPDATE files SET group_id=?, duplicate_of=NULL WHERE file_id=?", 
+                            (group_id, file_id))
+                else:
+                    # This is a duplicate
+                    conn.execute("UPDATE files SET group_id=?, duplicate_of=? WHERE file_id=?",
+                            (group_id, original_file_id, file_id))
+            
+            conn.commit()
     
     def _print_extraction_stats(self, candidates: List[Tuple[Path, int]], 
                                size_counts: Counter, existing_sizes: Set[int]):
