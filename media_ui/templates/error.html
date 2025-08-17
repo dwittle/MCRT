@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}Error - Media Review Tool{% endblock %}
+
+{% block content %}
+<div class="error-state">
+    <h2>❌ Error</h2>
+    <div class="error-box">
+        <p><strong>{{ error }}</strong></p>
+    </div>
+    
+    <div class="error-actions">
+        <a href="{{ url_for('dashboard') }}" class="btn btn-primary">🏠 Back to Dashboard</a>
+        <button class="btn btn-secondary" onclick="history.back()">⬅️ Go Back</button>
+        <button class="btn btn-secondary" onclick="location.reload()">🔄 Retry</button>
+    </div>
+</div>
+
+<style>
+.error-state {
+    text-align: center;
+    padding: 40px 20px;
+}
+
+.error-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    margin-top: 24px;
+    flex-wrap: wrap;
+}
+</style>
+{% endblock %}

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Media Review Tool{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <div class="header">
+        <div class="container">
+            <nav class="nav">
+                <h1>📸 Media Review Tool</h1>
+                <a href="{{ url_for('dashboard') }}" class="{% if request.endpoint == 'dashboard' %}active{% endif %}">Dashboard</a>
+                <a href="{{ url_for('view_groups') }}" class="{% if request.endpoint == 'view_groups' %}active{% endif %}">📁 Groups</a>
+                <a href="{{ url_for('view_singles') }}" class="{% if request.endpoint == 'view_singles' %}active{% endif %}">🖼️ Singles</a>
+                <a href="{{ url_for('bulk_actions') }}" class="{% if request.endpoint == 'bulk_actions' %}active{% endif %}">⚡ Bulk</a>
+                <a href="{{ url_for('export_page') }}" class="{% if request.endpoint == 'export_page' %}active{% endif %}">📥 Export</a>
+            </nav>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Global message area -->
+        <div id="message" class="message" style="display: none;"></div>
+        
+        <!-- Page content -->
+        {% block content %}{% endblock %}
+    </div>
+    
+    <!-- Full-size image modal -->
+    <div id="imageModal" class="modal">
+        <span class="close" onclick="closeModal()">&times;</span>
+        <div class="modal-content">
+            <div class="loading">Loading...</div>
+            <img id="modalImage" src="" alt="" style="display: none;">
+            <div class="modal-info" style="display: none;">
+                <div id="modalInfo"></div>
+            </div>
+        </div>
+    </div>
+    
+    {% block extra_content %}{% endblock %}
+    
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    {% block extra_scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,330 @@
+{% extends "base.html" %}
+
+{% block title %}Bulk Actions - Media Review Tool{% endblock %}
+
+{% block content %}
+<h2>Bulk Actions</h2>
+
+<div class="form-section">
+    <div class="form-box">
+        <h3>📁 Bulk Mark by Pattern</h3>
+        <p>Mark multiple files based on path pattern matching with preview support.</p>
+        
+        <form id="bulk-mark-form">
+            <div class="form-group">
+                <label for="pattern">Path Pattern:</label>
+                <input type="text" id="pattern" name="pattern" 
+                       placeholder="e.g., screenshot, Private Directory Data, IMG_"
+                       title="Files containing this text in their path will be matched">
+                <small>Examples: "screenshot" (all screenshots), "2023" (files from 2023), "thumbnail" (thumbnail files)</small>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="status">Action:</label>
+                    <select id="status" name="status">
+                        <option value="">Preview Only (no changes)</option>
+                        <option value="keep">Mark as Keep</option>
+                        <option value="not_needed">Mark as Not Needed</option>
+                        <option value="undecided">Reset to Undecided</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="limit">Preview Limit:</label>
+                    <input type="number" id="limit" name="limit" value="100" min="10" max="1000">
+                </div>
+            </div>
+            
+            <div class="form-options">
+                <label>
+                    <input type="checkbox" id="regex" name="regex">
+                    Use regular expression pattern
+                </label>
+                <label>
+                    <input type="checkbox" id="show-paths" name="show-paths">
+                    Show full paths instead of filenames
+                </label>
+            </div>
+            
+            <div class="form-actions">
+                <button type="button" class="btn btn-primary" onclick="previewBulkMark()">
+                    🔍 Preview Matches
+                </button>
+                <button type="button" class="btn btn-warning" onclick="executeBulkMark()" 
+                        id="execute-btn" disabled>
+                    ⚡ Execute Action
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Preview results area -->
+<div id="preview-results" class="preview-section" style="display: none;">
+    <h3>🔍 Preview Results</h3>
+    <div id="preview-content"></div>
+</div>
+
+<div class="form-section">
+    <div class="form-box">
+        <h3>🧹 Maintenance Operations</h3>
+        <p>Database cleanup and maintenance tasks.</p>
+        
+        <div class="maintenance-actions">
+            <button class="btn btn-secondary" onclick="showDetailedStats()">
+                📊 View Detailed Statistics
+            </button>
+            <button class="btn btn-warning" onclick="cleanupCheckpoints()">
+                🗑️ Cleanup Old Checkpoints
+            </button>
+            <button class="btn btn-secondary" onclick="refreshStats()">
+                🔄 Refresh Dashboard
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+let lastPreviewResult = null;
+
+function previewBulkMark() {
+    const pattern = document.getElementById('pattern').value.trim();
+    const regex = document.getElementById('regex').checked;
+    const limit = parseInt(document.getElementById('limit').value);
+    const showPaths = document.getElementById('show-paths').checked;
+    
+    if (!pattern) {
+        showMessage('Please enter a pattern to search for', 'error');
+        return;
+    }
+    
+    // Show loading
+    const previewSection = document.getElementById('preview-results');
+    const previewContent = document.getElementById('preview-content');
+    
+    previewSection.style.display = 'block';
+    previewContent.innerHTML = '<div class="loading-spinner">🔍 Searching for matches...</div>';
+    
+    // Disable execute button
+    document.getElementById('execute-btn').disabled = true;
+    
+    fetch('/api/bulk-mark-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            pattern: pattern,
+            regex: regex,
+            limit: limit,
+            show_paths: showPaths
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            previewContent.innerHTML = `<div class="error-box">❌ ${data.error}</div>`;
+            return;
+        }
+        
+        lastPreviewResult = data;
+        renderPreviewResults(data);
+        
+        // Enable execute button if status is selected
+        const status = document.getElementById('status').value;
+        if (status) {
+            document.getElementById('execute-btn').disabled = false;
+        }
+    })
+    .catch(error => {
+        previewContent.innerHTML = `<div class="error-box">Network error: ${error}</div>`;
+    });
+}
+
+function renderPreviewResults(data) {
+    const content = document.getElementById('preview-content');
+    
+    const totalMatches = data.data.total_matches;
+    const statusBreakdown = data.data.status_breakdown;
+    const sampleFiles = data.data.sample_files;
+    const impact = data.data.impact;
+    
+    let html = `
+        <div class="preview-header">
+            <h4>📊 Found ${totalMatches.toLocaleString()} matching files</h4>
+            <div class="preview-stats">
+                <div class="stat-item">
+                    <strong>Total Files:</strong> ${totalMatches.toLocaleString()}
+                </div>
+                <div class="stat-item">
+                    <strong>Total Size:</strong> ${impact.total_size_gb} GB
+                </div>
+                <div class="stat-item">
+                    <strong>Groups Affected:</strong> ${impact.groups_affected}
+                </div>
+            </div>
+        </div>
+        
+        <div class="status-breakdown">
+            <h5>Status Breakdown:</h5>
+            <div class="status-grid">
+    `;
+    
+    for (const [status, count] of Object.entries(statusBreakdown)) {
+        html += `
+            <div class="status-item status-${status}">
+                <span class="status-label">${status}</span>
+                <span class="status-count">${count.toLocaleString()}</span>
+            </div>
+        `;
+    }
+    
+    html += `
+            </div>
+        </div>
+        
+        <div class="sample-files">
+            <h5>Sample Files (showing ${sampleFiles.length} of ${totalMatches.toLocaleString()}):</h5>
+            <div class="sample-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Status</th>
+                            <th>Size</th>
+                            <th>Dimensions</th>
+                            <th>Group</th>
+                            <th>${data.showing_sample ? 'Filename' : 'Path'}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+    `;
+    
+    sampleFiles.slice(0, 20).forEach(file => {
+        const displayPath = data.showing_sample ? file.filename : file.path;
+        html += `
+            <tr>
+                <td>${file.file_id}</td>
+                <td><span class="status-badge status-${file.review_status}">${file.review_status}</span></td>
+                <td>${file.size_mb} MB</td>
+                <td>${file.dimensions}</td>
+                <td>${file.group_id || '-'}</td>
+                <td title="${file.path}">${displayPath}</td>
+            </tr>
+        `;
+    });
+    
+    html += `
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    `;
+    
+    if (totalMatches > data.preview_limit) {
+        html += `
+            <div class="warning-box">
+                ⚠️ <strong>Important:</strong> Preview shows ${data.preview_limit} files, 
+                but pattern matches <strong>${totalMatches.toLocaleString()} files total</strong>.
+                All ${totalMatches.toLocaleString()} files will be affected by status changes.
+            </div>
+        `;
+    }
+    
+    content.innerHTML = html;
+}
+
+function executeBulkMark() {
+    if (!lastPreviewResult) {
+        showMessage('Please preview the matches first', 'error');
+        return;
+    }
+    
+    const pattern = document.getElementById('pattern').value.trim();
+    const status = document.getElementById('status').value;
+    const regex = document.getElementById('regex').checked;
+    
+    if (!status) {
+        showMessage('Please select an action (status) to apply', 'error');
+        return;
+    }
+    
+    const totalFiles = lastPreviewResult.data.total_matches;
+    
+    if (!confirm(`Mark ${totalFiles.toLocaleString()} files as "${status}"?\n\nThis action affects ALL matching files, not just the preview.`)) {
+        return;
+    }
+    
+    // Show executing state
+    const executeBtn = document.getElementById('execute-btn');
+    executeBtn.textContent = '⏳ Executing...';
+    executeBtn.disabled = true;
+    
+    fetch('/api/bulk-mark-execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            pattern: pattern,
+            status: status,
+            regex: regex
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.result === 'success') {
+            const updated = data.data.files_updated;
+            showMessage(`✅ Successfully updated ${updated.toLocaleString()} files to "${status}"`, 'success');
+            
+            // Clear form and preview
+            document.getElementById('bulk-mark-form').reset();
+            document.getElementById('preview-results').style.display = 'none';
+            lastPreviewResult = null;
+        } else {
+            showMessage(`Error: ${data.error}`, 'error');
+        }
+    })
+    .catch(error => {
+        showMessage(`Network error: ${error}`, 'error');
+    })
+    .finally(() => {
+        executeBtn.textContent = '⚡ Execute Action';
+        executeBtn.disabled = true;
+    });
+}
+
+function cleanupCheckpoints() {
+    if (!confirm('Clean up checkpoints older than 7 days?')) return;
+    
+    fetch('/api/cleanup-checkpoints', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days: 7 })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.result === 'success') {
+            const cleaned = data.data.checkpoints_cleaned;
+            showMessage(`✅ Cleaned up ${cleaned} old checkpoints`, 'success');
+        } else {
+            showMessage(`Error: ${data.error}`, 'error');
+        }
+    })
+    .catch(error => showMessage(`Network error: ${error}`, 'error'));
+}
+
+function showDetailedStats() {
+    window.open('/api/export-stats', '_blank');
+}
+
+function refreshStats() {
+    window.location.href = '/';
+}
+
+// Enable/disable execute button based on status selection
+document.getElementById('status').addEventListener('change', function() {
+    const executeBtn = document.getElementById('execute-btn');
+    executeBtn.disabled = !this.value || !lastPreviewResult;
+});
+</script>
+{% endblock %}

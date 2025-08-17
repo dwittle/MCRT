@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Media Review Tool{% endblock %}
+
+{% block content %}
+<h2>Collection Overview</h2>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="number">{{ "{:,}".format(stats.files.total) if stats.files.total else "0" }}</div>
+        <div class="label">Total Files</div>
+    </div>
+    <div class="stat-card">
+        <div class="number">{{ "{:,}".format(stats.groups.total) if stats.groups.total else "0" }}</div>
+        <div class="label">Groups</div>
+    </div>
+    <div class="stat-card">
+        <div class="number">{{ "{:,}".format(stats.review_status.keep) if stats.review_status.keep else "0" }}</div>
+        <div class="label">✅ Marked Keep</div>
+    </div>
+    <div class="stat-card">
+        <div class="number">{{ "{:,}".format(stats.review_status.not_needed) if stats.review_status.not_needed else "0" }}</div>
+        <div class="label">❌ Not Needed</div>
+    </div>
+    <div class="stat-card">
+        <div class="number">{{ "{:,}".format(stats.review_status.undecided) if stats.review_status.undecided else "0" }}</div>
+        <div class="label">⏳ Need Review</div>
+    </div>
+    <div class="stat-card">
+        <div class="number">{{ "{:.1f} GB".format(stats.storage.total_gb) if stats.storage.total_gb else "0.0 GB" }}</div>
+        <div class="label">Total Size</div>
+    </div>
+</div>
+
+<h3>Review Workflow</h3>
+<div class="actions">
+    <a href="{{ url_for('view_groups', status='undecided') }}" class="btn btn-primary">
+        📂 Review Duplicate Groups
+        {% if stats.groups and stats.groups.multi_file and stats.groups.multi_file > 0 %}
+        <span class="badge">{{ stats.groups.multi_file }}</span>
+        {% endif %}
+    </a>
+    <a href="{{ url_for('view_singles', status='undecided') }}" class="btn btn-secondary">
+        🖼️ Review Individual Images
+        {% if stats.groups and stats.groups.single_file and stats.groups.single_file > 0 %}
+        <span class="badge">{{ stats.groups.single_file }}</span>
+        {% endif %}
+    </a>
+    <a href="{{ url_for('bulk_actions') }}" class="btn btn-secondary">
+        ⚡ Bulk Actions
+    </a>
+    <a href="{{ url_for('export_page') }}" class="btn btn-secondary">
+        📥 Export Results
+    </a>
+</div>
+
+{% if stats.review_status and stats.review_status.undecided and stats.review_status.undecided > 0 %}
+<div class="info-box">
+    <h4>📊 Review Progress</h4>
+    <div class="progress-info">
+        <div>✅ Reviewed: {{ "{:,}".format((stats.review_status.keep or 0) + (stats.review_status.not_needed or 0)) }} files</div>
+        <div>⏳ Remaining: {{ "{:,}".format(stats.review_status.undecided or 0) }} files</div>
+    </div>
+
+    {% set total_files = stats.files.total or 0 %}
+    {% if total_files > 0 %}
+    {% set progress = ((stats.review_status.keep or 0) + (stats.review_status.not_needed or 0)) / total_files * 100 %}
+    <div class="progress-bar">
+        <div class="progress-fill" style="width: {{ progress }}%"></div>
+    </div>
+    <div class="progress-text">
+        {{ "%.1f"|format(progress) }}% complete
+    </div>
+    {% else %}
+    <div class="progress-bar">
+        <div class="progress-fill" style="width: 0%"></div>
+    </div>
+    <div class="progress-text">0.0% complete</div>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if stats.files and stats.files.images and stats.files.images > 0 %}
+<div class="info-box">
+    <h4>📸 Collection Details</h4>
+    <div class="detail-grid">
+        <div>
+            <strong>File Types:</strong><br>
+            {{ "{:,}".format(stats.files.images or 0) }} images, {{ "{:,}".format(stats.files.videos or 0) }} videos
+        </div>
+        <div>
+            <strong>Storage:</strong><br>
+            {{ "{:.1f} GB".format(stats.storage.total_gb or 0) }} total ({{ "{:.1f} MB".format(stats.storage.average_mb or 0) }} avg)
+        </div>
+        <div>
+            <strong>Groups:</strong><br>
+            {{ "{:,}".format(stats.groups.multi_file or 0) }} with duplicates, {{ "{:,}".format(stats.groups.single_file or 0) }} unique
+        </div>
+        {% if stats.groups and stats.groups.largest_size and stats.groups.largest_size > 1 %}
+        <div>
+            <strong>Largest Group:</strong><br>
+            {{ stats.groups.largest_size }} versions of same image
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// Auto-refresh stats every 30 seconds if reviewing
+{% if stats.review_status and stats.review_status.undecided and stats.review_status.undecided > 0 %}
+setInterval(() => {
+    fetch('/api/stats?detailed=true')
+        .then(response => response.json())
+        .then(data => {
+            if (data.data && data.data.review_status && data.data.review_status.undecided !== {{ stats.review_status.undecided }}) {
+                // Stats changed, refresh page
+                location.reload();
+            }
+        })
+        .catch(error => console.log('Stats refresh error:', error));
+}, 30000);
+{% endif %}
+</script>
+{% endblock %}

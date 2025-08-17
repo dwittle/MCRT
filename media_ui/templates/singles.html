@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}Review Singles - Media Review Tool{% endblock %}
+
+{% block content %}
+<h2>Individual Images</h2>
+
+<div class="controls">
+    <div class="filter-section">
+        <label>Filter by status:</label>
+        <select onchange="changeStatusFilter(this.value)">
+            <option value="undecided" {% if status_filter == 'undecided' %}selected{% endif %}>Undecided</option>
+            <option value="keep" {% if status_filter == 'keep' %}selected{% endif %}>Keep</option>
+            <option value="not_needed" {% if status_filter == 'not_needed' %}selected{% endif %}>Not Needed</option>
+            <option value="all" {% if status_filter == 'all' %}selected{% endif %}>All</option>
+        </select>
+    </div>
+    
+    <div class="pagination-info">
+        Showing {{ (pagination.page - 1) * pagination.per_page + 1 }}-{{ 
+            pagination.page * pagination.per_page if pagination.page * pagination.per_page < pagination.total_files 
+            else pagination.total_files 
+        }} of {{ "{:,}".format(pagination.total_files) }} files
+    </div>
+</div>
+
+{% if pagination.total_pages > 1 %}
+<div class="pagination">
+    {% if pagination.has_prev %}
+    <a href="{{ url_for('view_singles', page=1, status=status_filter) }}" class="btn btn-sm">⏮️ First</a>
+    <a href="{{ url_for('view_singles', page=pagination.page-1, status=status_filter) }}" class="btn btn-sm">⏪ Previous</a>
+    {% endif %}
+    
+    <span class="current">Page {{ pagination.page }} of {{ pagination.total_pages }}</span>
+    
+    {% if pagination.has_next %}
+    <a href="{{ url_for('view_singles', page=pagination.page+1, status=status_filter) }}" class="btn btn-sm">Next ⏩</a>
+    <a href="{{ url_for('view_singles', page=pagination.total_pages, status=status_filter) }}" class="btn btn-sm">Last ⏭️</a>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if files %}
+<div class="singles-grid">
+    {% for file in files %}
+    <div class="single-card" data-file-id="{{ file.file_id }}">
+        <div class="single-image" onclick="showImage({{ file.file_id }})">
+            <img src="{{ url_for('serve_thumbnail', file_id=file.file_id) }}" 
+                 alt="Image {{ file.file_id }}" 
+                 loading="lazy"
+                 onerror="this.src='{{ url_for('serve_image', file_id=file.file_id) }}'">
+            <div class="status-badge status-{{ file.review_status }}">{{ file.review_status }}</div>
+        </div>
+        
+        <div class="single-info">
+            <div class="single-title">{{ file.path_on_drive.split('/')[-1] }}</div>
+            <div class="single-meta">
+                <div>{{ file.width or '?' }}×{{ file.height or '?' }}</div>
+                <div>{{ "%.1f MB"|format(file.size_bytes / 1024 / 1024) }}</div>
+                <div>{{ "%.1f MP"|format((file.width or 0) * (file.height or 0) / 1000000) }}</div>
+                <div>{{ file.drive_label or 'Drive' }}</div>
+            </div>
+            
+            <div class="single-actions">
+                <button class="btn btn-keep" onclick="markFile({{ file.file_id }}, 'keep')">✅ Keep</button>
+                <button class="btn btn-skip" onclick="markFile({{ file.file_id }}, 'not_needed')">❌ Skip</button>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<div class="keyboard-help">
+    <strong>⌨️ Keyboard Shortcuts:</strong><br>
+    <strong>K</strong> = Keep • <strong>N</strong> = Not needed • <strong>U</strong> = Reset<br>
+    <strong>←/→</strong> or <strong>H/J</strong> = Navigate • <strong>Space</strong> = View full size
+</div>
+
+{% else %}
+<div class="empty-state">
+    <h3>🎉 No individual images to review!</h3>
+    <p>All single images have been reviewed for the current filter.</p>
+    <div class="empty-actions">
+        <a href="{{ url_for('view_groups', status=status_filter) }}" class="btn btn-primary">Review Groups</a>
+        <a href="{{ url_for('view_singles', status='all') }}" class="btn btn-secondary">View All Singles</a>
+    </div>
+</div>
+{% endif %}
+
+{% if pagination.total_pages > 1 %}
+<div class="pagination">
+    {% if pagination.has_prev %}
+    <a href="{{ url_for('view_singles', page=1, status=status_filter) }}" class="btn btn-sm">⏮️ First</a>
+    <a href="{{ url_for('view_singles', page=pagination.page-1, status=status_filter) }}" class="btn btn-sm">⏪ Previous</a>
+    {% endif %}
+    
+    <span class="current">Page {{ pagination.page }} of {{ pagination.total_pages }}</span>
+    
+    {% if pagination.has_next %}
+    <a href="{{ url_for('view_singles', page=pagination.page+1, status=status_filter) }}" class="btn btn-sm">Next ⏩</a>
+    <a href="{{ url_for('view_singles', page=pagination.total_pages, status=status_filter) }}" class="btn btn-sm">Last ⏭️</a>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+function changeStatusFilter(status) {
+    window.location.href = `{{ url_for('view_singles') }}?status=${status}&page=1`;
+}
+</script>
+{% endblock %}

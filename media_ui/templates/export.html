@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block title %}Export - Media Review Tool{% endblock %}
+
+{% block content %}
+<h2>Export Options</h2>
+
+<div class="form-section">
+    <div class="form-box">
+        <h3>📋 Export Backup List</h3>
+        <p>Generate a CSV file listing all files marked for backup.</p>
+        
+        <form id="export-form">
+            <div class="form-options">
+                <label>
+                    <input type="checkbox" id="include-undecided" checked>
+                    Include undecided files
+                </label>
+                <label>
+                    <input type="checkbox" id="include-large">
+                    Include large files (>500MB)
+                </label>
+            </div>
+            
+            <button type="button" class="btn btn-primary" onclick="exportBackupList()">
+                📥 Download Backup List
+            </button>
+        </form>
+    </div>
+    
+    <div class="form-box">
+        <h3>📊 Export Statistics</h3>
+        <p>Download detailed collection statistics as a text file.</p>
+        
+        <button class="btn btn-secondary" onclick="exportStats()">
+            📈 Download Stats Report
+        </button>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+function exportBackupList() {
+    const includeUndecided = document.getElementById('include-undecided').checked;
+    const includeLarge = document.getElementById('include-large').checked;
+    
+    fetch('/api/export-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            include_undecided: includeUndecided,
+            include_large: includeLarge
+        })
+    })
+    .then(response => {
+        if (response.ok) {
+            return response.blob();
+        } else {
+            throw new Error('Export failed');
+        }
+    })
+    .then(blob => {
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `backup_list_${new Date().toISOString().slice(0,10)}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+        
+        showMessage('Backup list downloaded successfully', 'success');
+    })
+    .catch(error => {
+        showMessage(`Export error: ${error}`, 'error');
+    });
+}
+
+function exportStats() {
+    window.open('/api/export-stats', '_blank');
+}
+</script>
+{% endblock %}

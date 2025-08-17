@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+
+{% block title %}Review Groups - Media Review Tool{% endblock %}
+
+{% block content %}
+<h2>Image Groups - Duplicate Detection</h2>
+
+<!-- Pagination and filters -->
+<div class="controls">
+    <div class="filter-section">
+        <label>Filter by status:</label>
+        <select onchange="changeStatusFilter(this.value)">
+            <option value="undecided" {% if status_filter == 'undecided' %}selected{% endif %}>Undecided</option>
+            <option value="keep" {% if status_filter == 'keep' %}selected{% endif %}>Keep</option>
+            <option value="not_needed" {% if status_filter == 'not_needed' %}selected{% endif %}>Not Needed</option>
+            <option value="all" {% if status_filter == 'all' %}selected{% endif %}>All</option>
+        </select>
+    </div>
+    
+    <div class="pagination-info">
+        Showing groups {{ (pagination.page - 1) * pagination.per_page + 1 }}-{{ 
+            pagination.page * pagination.per_page if pagination.page * pagination.per_page < pagination.total_groups 
+            else pagination.total_groups 
+        }} of {{ "{:,}".format(pagination.total_groups) }}
+    </div>
+</div>
+
+<!-- Pagination controls -->
+{% if pagination.total_pages > 1 %}
+<div class="pagination">
+    {% if pagination.has_prev %}
+    <a href="{{ url_for('view_groups', page=1, status=status_filter) }}" class="btn btn-sm">⏮️ First</a>
+    <a href="{{ url_for('view_groups', page=pagination.page-1, status=status_filter) }}" class="btn btn-sm">⏪ Previous</a>
+    {% endif %}
+    
+    <span class="current">Page {{ pagination.page }} of {{ pagination.total_pages }}</span>
+    
+    {% if pagination.has_next %}
+    <a href="{{ url_for('view_groups', page=pagination.page+1, status=status_filter) }}" class="btn btn-sm">Next ⏩</a>
+    <a href="{{ url_for('view_groups', page=pagination.total_pages, status=status_filter) }}" class="btn btn-sm">Last ⏭️</a>
+    {% endif %}
+</div>
+{% endif %}
+
+<!-- Groups display -->
+{% if groups %}
+{% for group_data in groups %}
+{% set group = group_data.group %}
+{% set files = group_data.files %}
+
+<div class="group-container" data-group-id="{{ group.group_id }}">
+    <div class="group-header">
+        <div class="group-title">
+            <h3>Group {{ group.group_id }}</h3>
+            <span class="group-stats">{{ group.file_count }} images total</span>
+        </div>
+        
+        <div class="group-description">
+            Choose the best version • Original is highlighted in green
+        </div>
+        
+        <div class="group-actions">
+            <button class="btn btn-keep" onclick="markGroup({{ group.group_id }}, 'keep')">
+                ✅ Keep Group
+            </button>
+            <button class="btn btn-skip" onclick="markGroup({{ group.group_id }}, 'not_needed')">
+                ❌ Skip Group
+            </button>
+            <button class="btn btn-reset" onclick="markGroup({{ group.group_id }}, 'undecided')">
+                ↩️ Reset Group
+            </button>
+        </div>
+    </div>
+    
+    <div class="image-grid">
+        {% for file in files %}
+        <div class="image-card {% if file.is_original %}original{% endif %}" data-file-id="{{ file.file_id }}">
+            <div class="image-container" onclick="showImage({{ file.file_id }})">
+                <img src="{{ url_for('serve_thumbnail', file_id=file.file_id) }}" 
+                     alt="Image {{ file.file_id }}" 
+                     loading="lazy"
+                     onerror="this.src='{{ url_for('serve_image', file_id=file.file_id) }}'">
+                
+                {% if file.is_original %}
+                <div class="original-badge">ORIGINAL</div>
+                {% endif %}
+                
+                <div class="status-badge status-{{ file.review_status }}">{{ file.review_status }}</div>
+            </div>
+            
+            <div class="image-info">
+                <div class="image-title">{{ file.path_on_drive.split('/')[-1] }}</div>
+                <div class="image-meta">
+                    <div>{{ file.width or '?' }}×{{ file.height or '?' }}</div>
+                    <div>{{ "%.1f MB"|format(file.size_bytes / 1024 / 1024) }}</div>
+                    <div>{{ "%.1f MP"|format((file.width or 0) * (file.height or 0) / 1000000) }}</div>
+                    <div>{{ file.drive_label or 'Drive' }}</div>
+                </div>
+                
+                <div class="image-actions">
+                    {% if not file.is_original %}
+                    <button class="btn btn-promote" onclick="promoteFile({{ file.file_id }})">
+                        👑 Make Original
+                    </button>
+                    {% endif %}
+                    <button class="btn btn-keep" onclick="markFile({{ file.file_id }}, 'keep')">✅</button>
+                    <button class="btn btn-skip" onclick="markFile({{ file.file_id }}, 'not_needed')">❌</button>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endfor %}
+
+<!-- Repeat pagination at bottom -->
+{% if pagination.total_pages > 1 %}
+<div class="pagination">
+    {% if pagination.has_prev %}
+    <a href="{{ url_for('view_groups', page=1, status=status_filter) }}" class="btn btn-sm">⏮️ First</a>
+    <a href="{{ url_for('view_groups', page=pagination.page-1, status=status_filter) }}" class="btn btn-sm">⏪ Previous</a>
+    {% endif %}
+    
+    <span class="current">Page {{ pagination.page }} of {{ pagination.total_pages }}</span>
+    
+    {% if pagination.has_next %}
+    <a href="{{ url_for('view_groups', page=pagination.page+1, status=status_filter) }}" class="btn btn-sm">Next ⏩</a>
+    <a href="{{ url_for('view_groups', page=pagination.total_pages, status=status_filter) }}" class="btn btn-sm">Last ⏭️</a>
+    {% endif %}
+</div>
+{% endif %}
+
+{% else %}
+<div class="empty-state">
+    <h3>🎉 No groups to review!</h3>
+    <p>All duplicate groups have been reviewed for the current filter.</p>
+    <div class="empty-actions">
+        <a href="{{ url_for('view_singles', status=status_filter) }}" class="btn btn-primary">
+            Review Individual Images
+        </a>
+        <a href="{{ url_for('view_groups', status='all') }}" class="btn btn-secondary">
+            View All Groups
+        </a>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+function changeStatusFilter(status) {
+    window.location.href = `{{ url_for('view_groups') }}?status=${status}&page=1`;
+}
+
+// Groups-specific JavaScript
+function markGroup(groupId, status) {
+    fetch('/api/mark-group', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group_id: groupId, status: status })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.result === 'success') {
+            showMessage(`Group ${groupId} marked as ${status} (${data.data.files_updated} files)`, 'success');
+            
+            // Update status badges in the group
+            document.querySelectorAll(`[data-group-id="${groupId}"] .status-badge`).forEach(badge => {
+                badge.className = `status-badge status-${status}`;
+                badge.textContent = status;
+            });
+        } else {
+            showMessage(`Error: ${data.error}`, 'error');
+        }
+    })
+    .catch(error => showMessage(`Network error: ${error}`, 'error'));
+}
+
+function promoteFile(fileId) {
+    if (!confirm('Make this image the group original?')) return;
+    
+    fetch('/api/promote-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: fileId })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.result === 'success') {
+            showMessage(`File ${fileId} promoted to group original`, 'success');
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            showMessage(`Error: ${data.error}`, 'error');
+        }
+    })
+    .catch(error => showMessage(`Network error: ${error}`, 'error'));
+}
+</script>
+{% endblock %}
