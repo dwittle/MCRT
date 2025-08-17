@@ -1,0 +1,11 @@
+# Core dependencies
+Pillow>=8.0.0
+imagehash>=4.0.0
+tqdm>=4.50.0
+
+# Development dependencies (optional)
+pytest>=6.0.0
+pytest-cov>=2.10.0
+black>=21.0.0
+flake8>=3.8.0
+mypy>=0.800
