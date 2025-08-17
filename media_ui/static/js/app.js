@@ -115,7 +115,7 @@ function setupImageErrorHandling() {
     });
 }
 
-// Enhanced image modal with error handling
+// Enhanced image modal with side-by-side compact layout
 function showImage(fileId) {
     const modal = document.getElementById('imageModal');
     const img = document.getElementById('modalImage');
@@ -147,12 +147,12 @@ function showImage(fileId) {
                     // This is a placeholder image
                     img.classList.add('placeholder');
                     
-                    // Add error info to the modal
+                    // Add error info to the compact info panel
                     const errorDiv = document.createElement('div');
-                    errorDiv.className = 'error-notice';
+                    errorDiv.className = 'error-notice-compact';
                     errorDiv.innerHTML = `
-                        <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 12px; margin-bottom: 16px;">
-                            <strong>⚠️ Image Issue:</strong> ${errorReason}
+                        <div class="compact-error">
+                            <span class="error-icon">⚠️</span> ${errorReason}
                         </div>
                     `;
                     info.insertBefore(errorDiv, info.firstChild);
@@ -172,55 +172,231 @@ function showImage(fileId) {
         
         // Show error message
         info.innerHTML = `
-            <div class="error-notice">
-                <div style="background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 4px; padding: 12px;">
-                    <strong>❌ Error:</strong> Could not load image ${fileId}
-                </div>
+            <div class="compact-error">
+                <span class="error-icon">❌</span>
+                <strong>Error loading image ${fileId}</strong>
             </div>
         `;
     };
     
-    // Set image source
+    // Set image source and add tooltip with full path
     img.src = `/image/${fileId}`;
     
-    // Load file info via API (this should still work even if image is missing)
+    // We'll add the tooltip after we get the file info
+    let imageTooltipAdded = false;
+    
+    // Load file info via API with compact display
     fetch(`/api/file-info/${fileId}`)
         .then(response => response.json())
         .then(data => {
             if (data.error) {
-                info.innerHTML += `<div class="error-notice"><p>File info error: ${data.error}</p></div>`;
+                info.innerHTML += `
+                    <div class="compact-error">
+                        <span class="error-icon">⚠️</span>
+                        <strong>File info error:</strong> ${data.error}
+                    </div>
+                `;
                 return;
             }
             
             const filename = data.path_on_drive ? data.path_on_drive.split('/').pop() : 'Unknown';
+            const completePath = data.complete_path || data.path_on_drive || 'Unknown path';
             const megapixels = data.width && data.height ? 
-                ((data.width * data.height) / 1000000).toFixed(1) : 'Unknown';
-            const sizeMB = data.size_bytes ? 
-                (data.size_bytes / 1024 / 1024).toFixed(1) : 'Unknown';
+                ((data.width * data.height) / 1000000).toFixed(1) : '?';
             
+            // Format file size in human readable format
+            const formatFileSize = (bytes) => {
+                if (!bytes || bytes === 0) return '0 B';
+                const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+                let unitIndex = 0;
+                let size = bytes;
+                while (size >= 1024 && unitIndex < units.length - 1) {
+                    size /= 1024;
+                    unitIndex++;
+                }
+                return `${size.toFixed(1)} ${units[unitIndex]}`;
+            };
+            
+            const formattedSize = formatFileSize(data.size_bytes);
+            
+            // Build compact file info HTML
             const fileInfoHtml = `
-                <h3>${filename}</h3>
-                <div class="file-details">
-                    <p><strong>Dimensions:</strong> ${data.width || '?'} × ${data.height || '?'} (${megapixels} MP)</p>
-                    <p><strong>Size:</strong> ${sizeMB} MB</p>
-                    <p><strong>Status:</strong> <span class="status-badge status-${data.review_status}">${data.review_status}</span></p>
-                    ${data.is_original ? '<p><strong>🏆 Group Original</strong></p>' : ''}
-                    ${data.drive_label ? `<p><strong>Drive:</strong> ${data.drive_label}</p>` : ''}
-                    <p><strong>File ID:</strong> ${fileId}</p>
+                <div class="compact-header">
+                    <h3 class="compact-title">${filename}</h3>
+                    <span class="status-badge status-${data.review_status}">${data.review_status}</span>
+                </div>
+                
+                <div class="compact-details">
+                    <!-- Essential Info -->
+                    <div class="info-row">
+                        <span class="info-icon">📏</span>
+                        <span class="info-content">${data.width || '?'} × ${data.height || '?'} (${megapixels} MP)</span>
+                    </div>
+                    
+                    <div class="info-row">
+                        <span class="info-icon">📦</span>
+                        <span class="info-content">${formattedSize}</span>
+                    </div>
+                    
+                    <div class="info-row">
+                        <span class="info-icon">🏷️</span>
+                        <span class="info-content">${data.type || 'Unknown'}</span>
+                    </div>
+                    
+                    <!-- Group Info -->
+                    ${data.group_id ? `
+                        <div class="info-row">
+                            <span class="info-icon">👥</span>
+                            <span class="info-content">Group ${data.group_id} ${data.is_original ? '(Original)' : ''}</span>
+                        </div>
+                    ` : `
+                        <div class="info-row">
+                            <span class="info-icon">📄</span>
+                            <span class="info-content">Single file</span>
+                        </div>
+                    `}
+                    
+                    <!-- Drive Info -->
+                    <div class="info-row">
+                        <span class="info-icon">💿</span>
+                        <span class="info-content">${data.drive_label || 'Unknown drive'}</span>
+                    </div>
+                    
+                    <!-- File Path - Compact Display -->
+                    <div class="info-row path-row">
+                        <span class="info-icon">📁</span>
+                        <span class="info-content">
+                            <code class="compact-path" title="${completePath}">${completePath.length > 50 ? '...' + completePath.slice(-47) : completePath}</code>
+                        </span>
+                    </div>
+                    
+                    <!-- Full Path - Expandable -->
+                    ${completePath.length > 50 ? `
+                        <div class="info-row full-path-row" style="display: none;">
+                            <span class="info-icon">🔗</span>
+                            <span class="info-content">
+                                <code class="full-path" title="Click to copy">${completePath}</code>
+                            </span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-icon"></span>
+                            <span class="info-content">
+                                <button class="show-full-path-btn" onclick="this.closest('.compact-details').querySelector('.full-path-row').style.display = this.closest('.compact-details').querySelector('.full-path-row').style.display === 'none' ? 'flex' : 'none'; this.textContent = this.textContent === 'Show full path' ? 'Hide full path' : 'Show full path';">Show full path</button>
+                            </span>
+                        </div>
+                    ` : ''}
+                    
+                    <!-- Review Info -->
+                    ${data.reviewed_at ? `
+                        <div class="info-row">
+                            <span class="info-icon">📅</span>
+                            <span class="info-content">${new Date(data.reviewed_at).toLocaleDateString()}</span>
+                        </div>
+                    ` : ''}
+                    
+                    ${data.review_note ? `
+                        <div class="info-row">
+                            <span class="info-icon">📝</span>
+                            <span class="info-content">${data.review_note}</span>
+                        </div>
+                    ` : ''}
+                    
+                    <!-- Technical Details -->
+                    ${data.is_large ? `
+                        <div class="info-row">
+                            <span class="info-icon">📁</span>
+                            <span class="info-content">Large file</span>
+                        </div>
+                    ` : ''}
+                    
+                    <div class="info-row">
+                        <span class="info-icon">🔢</span>
+                        <span class="info-content">ID: ${fileId}</span>
+                    </div>
+                    
+                    ${data.created_at ? `
+                        <div class="info-row">
+                            <span class="info-icon">➕</span>
+                            <span class="info-content">Added: ${new Date(data.created_at).toLocaleDateString()}</span>
+                        </div>
+                    ` : ''}
+                    
+                    ${data.hash_sha256 ? `
+                        <div class="info-row">
+                            <span class="info-icon">🔐</span>
+                            <span class="info-content">
+                                <code class="compact-hash" title="Click to copy SHA256">${data.hash_sha256.substring(0, 12)}...</code>
+                            </span>
+                        </div>
+                    ` : ''}
+                </div>
+                
+                <!-- Quick Actions -->
+                <div class="compact-actions">
+                    <button class="compact-btn btn-keep" onclick="markFile(${fileId}, 'keep'); closeModal();">
+                        ✅ Keep
+                    </button>
+                    <button class="compact-btn btn-skip" onclick="markFile(${fileId}, 'not_needed'); closeModal();">
+                        ❌ Skip  
+                    </button>
+                    <button class="compact-btn btn-reset" onclick="markFile(${fileId}, 'undecided'); closeModal();">
+                        ↩️ Reset
+                    </button>
+                    ${data.group_id && !data.is_original ? `
+                        <button class="compact-btn btn-promote" onclick="promoteFileFromModal(${fileId}, ${data.group_id});">
+                            👑 Make Original
+                        </button>
+                    ` : ''}
                 </div>
             `;
             
             // Add file info after any error notices
-            const existingError = info.querySelector('.error-notice');
+            const existingError = info.querySelector('.error-notice-compact');
             if (existingError) {
                 existingError.insertAdjacentHTML('afterend', fileInfoHtml);
             } else {
                 info.innerHTML = fileInfoHtml;
             }
+            
+            // Add tooltip to the image showing full path
+            if (!imageTooltipAdded) {
+                img.title = `${filename}\n\nFull path: ${completePath}\n\nClick image for full size view`;
+                img.style.cursor = 'pointer';
+                imageTooltipAdded = true;
+            }
+            
+            // Make paths and hashes copyable
+            const copyableElements = info.querySelectorAll('.compact-path, .compact-hash');
+            copyableElements.forEach(element => {
+                element.style.cursor = 'pointer';
+                element.addEventListener('click', function() {
+                    const textToCopy = element.classList.contains('compact-path') ? 
+                        completePath : data.hash_sha256;
+                    
+                    navigator.clipboard.writeText(textToCopy).then(() => {
+                        const originalText = this.textContent;
+                        this.textContent = '✓ Copied!';
+                        this.style.background = 'var(--success)';
+                        this.style.color = 'white';
+                        setTimeout(() => {
+                            this.textContent = originalText;
+                            this.style.background = '';
+                            this.style.color = '';
+                        }, 1000);
+                    }).catch(err => {
+                        console.error('Failed to copy text: ', err);
+                    });
+                });
+            });
         })
         .catch(err => {
             console.error('Error loading file info:', err);
-            info.innerHTML += `<div class="error-notice"><p>Could not load file information</p></div>`;
+            info.innerHTML += `
+                <div class="compact-error">
+                    <span class="error-icon">⚠️</span>
+                    <strong>Network Error:</strong> Could not load file information
+                </div>
+            `;
         });
 }
 
