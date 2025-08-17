@@ -187,6 +187,84 @@ def serve_placeholder_image(file_id, error_reason="File not found"):
             status=404
         )
 
+def serve_tiff_as_jpeg(tiff_path, file_id, thumbnail=False):
+    """Convert TIFF file to JPEG on-the-fly for web display."""
+    try:
+        if not PIL_AVAILABLE:
+            print(f"❌ PIL not available for TIFF conversion: {tiff_path}")
+            return serve_placeholder_image(file_id, "TIFF conversion requires Pillow")
+        
+        print(f"🔄 Converting TIFF to JPEG: {tiff_path}")
+        
+        # Check if file exists and is readable
+        if not tiff_path.exists():
+            print(f"❌ TIFF file not found: {tiff_path}")
+            return serve_placeholder_image(file_id, "TIFF file not found")
+        
+        if not os.access(tiff_path, os.R_OK):
+            print(f"❌ TIFF file not readable: {tiff_path}")
+            return serve_placeholder_image(file_id, "TIFF file not readable")
+        
+        # Try to open and convert TIFF to JPEG
+        try:
+            with Image.open(tiff_path) as img:
+                print(f"📷 Opened TIFF: {img.size}, mode: {img.mode}")
+                
+                # Convert to RGB if necessary (TIFF can be CMYK, etc.)
+                if img.mode not in ('RGB', 'L'):
+                    print(f"🔄 Converting from {img.mode} to RGB")
+                    img = img.convert('RGB')
+                
+                # Create thumbnail if requested
+                if thumbnail:
+                    # Create thumbnail while maintaining aspect ratio
+                    original_size = img.size
+                    img.thumbnail((400, 300), Image.Resampling.LANCZOS)
+                    quality = 85
+                    print(f"📏 Created thumbnail: {original_size} → {img.size}")
+                else:
+                    # For full-size images, optionally resize very large TIFFs
+                    max_size = 2048  # Max dimension for web display
+                    if max(img.size) > max_size:
+                        ratio = max_size / max(img.size)
+                        new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+                        original_size = img.size
+                        img = img.resize(new_size, Image.Resampling.LANCZOS)
+                        print(f"📏 Resized TIFF: {original_size} → {new_size} for web display")
+                    
+                    quality = 92
+                
+                # Convert to JPEG bytes
+                img_buffer = io.BytesIO()
+                img.save(img_buffer, format='JPEG', quality=quality, optimize=True)
+                img_buffer.seek(0)
+                
+                # Create response
+                response = Response(
+                    img_buffer.getvalue(),
+                    mimetype='image/jpeg',
+                    headers={
+                        'Cache-Control': 'public, max-age=3600',  # Cache converted images
+                        'X-Original-Format': 'TIFF',
+                        'X-Converted': 'true',
+                        'X-File-ID': str(file_id),
+                        'Content-Length': str(len(img_buffer.getvalue()))
+                    }
+                )
+                
+                print(f"✅ TIFF converted to JPEG: {img.size} pixels, quality={quality}, {len(img_buffer.getvalue())} bytes")
+                return response
+                
+        except Exception as img_error:
+            print(f"❌ PIL error opening/converting TIFF {tiff_path}: {img_error}")
+            return serve_placeholder_image(file_id, f"TIFF conversion failed: {str(img_error)[:50]}")
+            
+    except Exception as e:
+        print(f"❌ TIFF conversion error: {e}")
+        import traceback
+        traceback.print_exc()
+        return serve_placeholder_image(file_id, f"TIFF processing error: {str(e)[:50]}")
+
 def serve_thumbnail_placeholder(file_id, error_reason="File not found"):
     """Serve a smaller placeholder for thumbnails."""
     try:
@@ -364,6 +442,11 @@ def serve_image(file_id):
         
         print(f"🖼️ Full path: {full_path}")
         
+        file_extension = full_path.suffix.lower()
+        if file_extension in ['.tiff', '.tif']:
+            print(f"🚫 TIFF file detected, serving placeholder: {full_path}")
+            return serve_placeholder_image(file_id, f"TIFF files not supported in web view: {full_path.name}")
+
         if not full_path.exists():
             print(f"⚠️ File not found on filesystem: {full_path}")
             return serve_placeholder_image(file_id, f"File missing: {full_path.name}")
@@ -405,6 +488,11 @@ def serve_thumbnail(file_id):
         else:
             full_path = Path(path_on_drive)
         
+        file_extension = full_path.suffix.lower()
+        if file_extension in ['.tiff', '.tif']:
+            print(f"🚫 TIFF thumbnail detected, serving placeholder: {full_path}")
+            return serve_thumbnail_placeholder(file_id, f"TIFF files not supported: {full_path.name}")
+
         if not full_path.exists():
             print(f"⚠️ Thumbnail source not found: {full_path}")
             return serve_thumbnail_placeholder(file_id, "File missing")

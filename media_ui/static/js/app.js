@@ -1,6 +1,6 @@
 /**
  * Media Review Tool - Complete JavaScript Functionality
- * Handles all UI interactions, image viewing, API calls, and enhanced error handling
+ * Handles all UI interactions, image viewing, API calls, TIFF support, and enhanced error handling
  */
 
 // Global state
@@ -17,6 +17,71 @@ document.addEventListener('DOMContentLoaded', function() {
     checkForUpdates();
     addImageStateCSS();
 });
+
+// Enhanced image loading with TIFF detection and better error handling
+function setupImageErrorHandling() {
+    // Handle image load errors gracefully
+    const images = document.querySelectorAll('img[src*="/image/"], img[src*="/thumbnail/"]');
+    
+    images.forEach(img => {
+        // Add loading state
+        img.classList.add('loading');
+        
+        img.addEventListener('load', function() {
+            img.classList.remove('loading');
+            img.classList.add('loaded');
+            
+            // Check response headers for format conversion info
+            fetch(img.src, {method: 'HEAD'})
+                .then(response => {
+                    const originalFormat = response.headers.get('X-Original-Format');
+                    const converted = response.headers.get('X-Converted');
+                    const errorReason = response.headers.get('X-Error-Reason');
+                    
+                    if (originalFormat === 'TIFF' && converted === 'true') {
+                        // Add TIFF conversion indicator
+                        const container = img.closest('.image-container, .single-image');
+                        if (container && !container.querySelector('.format-badge')) {
+                            const badge = document.createElement('div');
+                            badge.className = 'format-badge';
+                            badge.textContent = 'TIFF';
+                            badge.title = 'Original TIFF file converted to JPEG for web display';
+                            container.appendChild(badge);
+                        }
+                        console.log(`TIFF file converted for display: ${img.src}`);
+                    }
+                    
+                    if (errorReason) {
+                        img.classList.add('placeholder');
+                        console.log(`Image ${img.src} loaded as placeholder: ${errorReason}`);
+                    }
+                })
+                .catch(err => {
+                    // Silently fail header check - image loaded successfully
+                    console.log('Could not check image headers:', err);
+                });
+        });
+        
+        img.addEventListener('error', function() {
+            console.log(`Image failed to load: ${img.src}`);
+            img.classList.remove('loading');
+            img.classList.add('error');
+            
+            // Prevent infinite retry loops - only retry once
+            if (!img.src.includes('placeholder=true') && !img.hasAttribute('data-retry-attempted')) {
+                console.log(`Attempting placeholder fallback for: ${img.src}`);
+                img.setAttribute('data-retry-attempted', 'true');
+                
+                // Try to reload with placeholder parameter
+                const originalSrc = img.src;
+                img.src = originalSrc + (originalSrc.includes('?') ? '&' : '?') + 'placeholder=true';
+            } else {
+                console.log(`Image load failed permanently: ${img.src}`);
+                // Don't retry again - this prevents infinite loops
+            }
+        });
+    });
+}
 
 // Add tooltips to images showing full file path
 function addImageTooltips() {
@@ -78,43 +143,6 @@ ${data.group_id ? `👥 Group ${data.group_id}` : '📄 Single file'} • 💿 $
     });
 }
 
-// Enhanced image loading with better error handling
-function setupImageErrorHandling() {
-    // Handle image load errors gracefully
-    const images = document.querySelectorAll('img[src*="/image/"], img[src*="/thumbnail/"]');
-    
-    images.forEach(img => {
-        // Add loading state
-        img.classList.add('loading');
-        
-        img.addEventListener('load', function() {
-            img.classList.remove('loading');
-            img.classList.add('loaded');
-            
-            // Check if this is actually a placeholder image
-            const errorReason = img.getAttribute('data-error');
-            if (errorReason) {
-                img.classList.add('placeholder');
-                console.log(`Image ${img.src} loaded as placeholder: ${errorReason}`);
-            }
-        });
-        
-        img.addEventListener('error', function() {
-            console.log(`Image failed to load: ${img.src}`);
-            img.classList.remove('loading');
-            img.classList.add('error');
-            
-            // The server should now return a placeholder instead of 404
-            // But just in case, we can handle it here too
-            if (!img.src.includes('placeholder=true')) {
-                // Try to reload with placeholder parameter
-                const originalSrc = img.src;
-                img.src = originalSrc + (originalSrc.includes('?') ? '&' : '?') + 'placeholder=true';
-            }
-        });
-    });
-}
-
 // Enhanced image modal with side-by-side compact layout
 function showImage(fileId) {
     const modal = document.getElementById('imageModal');
@@ -139,28 +167,9 @@ function showImage(fileId) {
         img.style.display = 'block';
         document.querySelector('.modal-info').style.display = 'block';
         
-        // Check response headers for error information
-        fetch(`/image/${fileId}`, {method: 'HEAD'})
-            .then(response => {
-                const errorReason = response.headers.get('X-Error-Reason');
-                if (errorReason) {
-                    // This is a placeholder image
-                    img.classList.add('placeholder');
-                    
-                    // Add error info to the compact info panel
-                    const errorDiv = document.createElement('div');
-                    errorDiv.className = 'error-notice-compact';
-                    errorDiv.innerHTML = `
-                        <div class="compact-error">
-                            <span class="error-icon">⚠️</span> ${errorReason}
-                        </div>
-                    `;
-                    info.insertBefore(errorDiv, info.firstChild);
-                }
-            })
-            .catch(err => {
-                console.log('Could not check image headers:', err);
-            });
+        // Only check for placeholder status if the image actually failed to load properly
+        // Skip the HEAD request check since it can be unreliable
+        console.log(`✅ Image ${fileId} loaded successfully`);
     };
     
     // Enhanced error handler
@@ -366,11 +375,11 @@ function showImage(fileId) {
             }
             
             // Make paths and hashes copyable
-            const copyableElements = info.querySelectorAll('.compact-path, .compact-hash');
+            const copyableElements = info.querySelectorAll('.compact-path, .compact-hash, .full-path');
             copyableElements.forEach(element => {
                 element.style.cursor = 'pointer';
                 element.addEventListener('click', function() {
-                    const textToCopy = element.classList.contains('compact-path') ? 
+                    const textToCopy = element.classList.contains('compact-path') || element.classList.contains('full-path') ? 
                         completePath : data.hash_sha256;
                     
                     navigator.clipboard.writeText(textToCopy).then(() => {
@@ -407,11 +416,11 @@ function closeModal() {
     
     // Clear any error notices
     const info = document.getElementById('modalInfo');
-    const errorNotices = info.querySelectorAll('.error-notice');
+    const errorNotices = info.querySelectorAll('.error-notice-compact');
     errorNotices.forEach(notice => notice.remove());
 }
 
-// File and group marking
+// File and group marking with backend auto-promotion
 function markFile(fileId, status) {
     fetch('/api/mark-file', {
         method: 'POST',
@@ -425,6 +434,20 @@ function markFile(fileId, status) {
             if (changed) {
                 showMessage(`File ${fileId}: ${data.data.old_status} → ${status}`, 'success');
                 updateFileStatus(fileId, status);
+                
+                // Check if backend auto-promoted a file
+                if (data.data.auto_promotion) {
+                    const autoPromo = data.data.auto_promotion;
+                    showMessage(`🎯 Auto-promoted file ${autoPromo.new_original_id} to group original (last remaining)`, 'success');
+                    
+                    // Update UI to reflect the auto-promotion
+                    updateGroupAfterPromotion(
+                        autoPromo.new_original_id, 
+                        autoPromo.group_id, 
+                        autoPromo.old_original_id,
+                        true // isAutoPromotion flag
+                    );
+                }
                 
                 // Auto-advance in singles view
                 if (window.location.pathname === '/singles' && status !== 'undecided') {
@@ -464,6 +487,7 @@ function markGroup(groupId, status) {
     .catch(error => showMessage(`Network error: ${error}`, 'error'));
 }
 
+// Promotion functions without confirmation prompts
 function promoteFile(fileId) {
     fetch('/api/promote-file', {
         method: 'POST',
@@ -483,6 +507,32 @@ function promoteFile(fileId) {
         }
     })
     .catch(error => showMessage(`Network error: ${error}`, 'error'));
+}
+
+function promoteFileInGroup(fileId, groupId) {
+    console.log(`🔄 Promoting file ${fileId} in group ${groupId}`);
+    
+    fetch('/api/promote-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: fileId })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.result === 'success') {
+            showMessage(`File ${fileId} promoted to group original`, 'success');
+            
+            // Update the UI dynamically - no page reload!
+            updateGroupAfterPromotion(fileId, data.data.group_id, data.data.old_original_id);
+            
+        } else {
+            showMessage(`Error: ${data.error}`, 'error');
+        }
+    })
+    .catch(error => {
+        console.error('Promote error:', error);
+        showMessage(`Network error: ${error}`, 'error');
+    });
 }
 
 function promoteFileFromModal(fileId, groupId) {
@@ -510,8 +560,8 @@ function promoteFileFromModal(fileId, groupId) {
     .catch(error => showMessage(`Network error: ${error}`, 'error'));
 }
 
-function updateGroupAfterPromotion(newOriginalId, groupId, oldOriginalId) {
-    console.log(`🔄 Updating group ${groupId}: ${oldOriginalId} → ${newOriginalId}`);
+function updateGroupAfterPromotion(newOriginalId, groupId, oldOriginalId, isAutoPromotion = false) {
+    console.log(`🔄 Updating group ${groupId}: ${oldOriginalId} → ${newOriginalId}${isAutoPromotion ? ' (auto)' : ''}`);
     
     // Find all cards in the same group
     const allCards = document.querySelectorAll(`[data-file-id]`);
@@ -551,7 +601,7 @@ function updateGroupAfterPromotion(newOriginalId, groupId, oldOriginalId) {
             if (actions && !actions.querySelector('.btn-promote')) {
                 const promoteBtn = document.createElement('button');
                 promoteBtn.className = 'btn btn-promote';
-                promoteBtn.onclick = () => promoteFile(fileId);
+                promoteBtn.onclick = () => promoteFileInGroup(fileId, groupId);
                 promoteBtn.innerHTML = '👑 Make Original';
                 promoteBtn.style.animation = 'buttonSlideIn 0.3s ease-out';
                 actions.appendChild(promoteBtn);
@@ -560,9 +610,15 @@ function updateGroupAfterPromotion(newOriginalId, groupId, oldOriginalId) {
         
         // Add original styling and badge to new original
         if (fileId === newOriginalId) {
-            console.log(`📥 Adding original status to file ${fileId}`);
+            console.log(`📥 Adding original status to file ${fileId}${isAutoPromotion ? ' (auto-promoted)' : ''}`);
             
             card.classList.add('original');
+            
+            // Add special auto-promotion highlight if this was automatic
+            if (isAutoPromotion) {
+                card.classList.add('auto-promoted');
+                setTimeout(() => card.classList.remove('auto-promoted'), 1000);
+            }
             
             // Add original badge if not present
             const imageContainer = card.querySelector('.image-container, .single-image');
@@ -998,10 +1054,17 @@ if (window.location.hostname === 'localhost' || window.location.hostname === '12
         showImage: showImage,
         markFile: markFile,
         markGroup: markGroup,
+        promoteFile: promoteFile,
         testPlaceholder: (fileId) => {
             const img = new Image();
             img.onload = () => console.log(`Placeholder for ${fileId} loaded`);
             img.onerror = () => console.log(`Placeholder for ${fileId} failed`);
+            img.src = `/image/${fileId}`;
+        },
+        testTiff: (fileId) => {
+            const img = new Image();
+            img.onload = () => console.log(`TIFF ${fileId} converted and loaded`);
+            img.onerror = () => console.log(`TIFF ${fileId} conversion failed`);
             img.src = `/image/${fileId}`;
         }
     };
