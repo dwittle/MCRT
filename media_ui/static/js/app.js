@@ -289,8 +289,6 @@ function markGroup(groupId, status) {
 }
 
 function promoteFile(fileId) {
-    if (!confirm('Make this image the group original?')) return;
-    
     fetch('/api/promote-file', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -312,8 +310,6 @@ function promoteFile(fileId) {
 }
 
 function promoteFileFromModal(fileId, groupId) {
-    if (!confirm('Make this image the group original?')) return;
-    
     fetch('/api/promote-file', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -156,8 +156,6 @@ function changeStatusFilter(status) {
 
 // Groups-specific function that doesn't reload the page
 function promoteFileInGroup(fileId, groupId) {
-    if (!confirm('Make this image the group original?')) return;
-    
     console.log(`🔄 Promoting file ${fileId} in group ${groupId}`);
     
     fetch('/api/promote-file', {
