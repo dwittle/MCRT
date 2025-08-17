@@ -31,7 +31,22 @@
     box-shadow: var(--shadow-lg);
 }
 
-/* Image Containers */
+/* Enhanced Image Tooltips */
+.image-container img,
+.single-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform var(--transition-slow);
+    position: relative;
+}
+
+.image-container img:hover,
+.single-image img:hover {
+    transform: scale(1.1);
+}
+
+/* Custom tooltip styling for images */
 .image-container,
 .single-image {
     position: relative;
@@ -43,17 +58,10 @@
     flex-shrink: 0;
 }
 
-.image-container img,
-.single-image img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    transition: transform var(--transition-slow);
-}
-
-.image-container:hover img,
-.single-image:hover img {
-    transform: scale(1.1);
+/* Enhanced tooltip appearance */
+.image-container img[title],
+.single-image img[title] {
+    cursor: help;
 }
 
 /* Image Badges */
@@ -315,12 +323,44 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    position: relative;
 }
 
 .compact-path:hover {
     background: rgba(16, 185, 129, 0.2);
     transform: translateY(-1px);
     box-shadow: var(--shadow-sm);
+}
+
+.compact-path:hover::after {
+    content: "Click to copy full path";
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    margin-bottom: var(--space-1);
+    padding: var(--space-1) var(--space-2);
+    background: var(--text);
+    color: var(--surface);
+    font-size: var(--font-size-xs);
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+    z-index: var(--z-tooltip);
+    pointer-events: none;
+}
+
+.compact-path:hover::before {
+    content: "";
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border: 4px solid transparent;
+    border-top-color: var(--text);
+    z-index: var(--z-tooltip);
+    pointer-events: none;
 }
 
 .compact-hash {
@@ -485,6 +525,7 @@
 
 /* Responsive Button Handling for Small Cards */
 @media (max-width: 250px), 
+/* stylelint-disable-next-line at-rule-no-unknown */
 @container (max-width: 250px) {
     .image-actions .btn,
     .single-actions .btn {
@@ -519,13 +560,14 @@
     }
 }
 
-/* Container Queries Support */
+/* Container Queries Support (with fallback) */
 @supports (container-type: inline-size) {
     .image-card,
     .single-card {
         container-type: inline-size;
     }
     
+    /* stylelint-disable-next-line at-rule-no-unknown */
     @container (max-width: 220px) {
         .image-actions,
         .single-actions {
@@ -540,6 +582,7 @@
         }
     }
     
+    /* stylelint-disable-next-line at-rule-no-unknown */
     @container (max-width: 180px) {
         .image-title,
         .single-title {
@@ -555,6 +598,23 @@
         .single-actions .btn {
             font-size: var(--font-size-xs);
             padding: var(--space-1);
+        }
+    }
+}
+
+/* Fallback for browsers without container query support */
+@supports not (container-type: inline-size) {
+    @media (max-width: 220px) {
+        .image-actions,
+        .single-actions {
+            flex-direction: column;
+            gap: var(--space-1);
+        }
+        
+        .image-actions .btn,
+        .single-actions .btn {
+            width: 100%;
+            flex: none;
         }
     }
 }
