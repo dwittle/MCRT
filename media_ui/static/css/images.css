@@ -1,6 +1,6 @@
 /* images.css - Image Cards and Modal Styles */
 
-/* Image Cards */
+/* Image Cards - Enhanced with smooth transitions */
 .image-card,
 .single-card {
     border: 2px solid transparent;
@@ -22,6 +22,8 @@
 .image-card.original {
     border-color: var(--success);
     box-shadow: 0 0 0 1px var(--success);
+    background: rgba(16, 185, 129, 0.05);
+    transition: all var(--transition-slow);
 }
 
 .image-card.highlighted,
@@ -29,6 +31,53 @@
     border-color: var(--primary);
     transform: scale(1.02);
     box-shadow: var(--shadow-lg);
+}
+
+/* Smooth transitions for promotion changes */
+.image-card.original .original-badge {
+    animation: badgeAppear 0.5s ease-out;
+}
+
+@keyframes badgeAppear {
+    0% {
+        opacity: 0;
+        transform: scale(0.8);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+/* Smooth transitions for button changes */
+.image-actions .btn {
+    transition: all var(--transition-base);
+}
+
+.image-actions .btn-promote {
+    animation: buttonSlideIn 0.3s ease-out;
+}
+
+@keyframes badgeDisappear {
+    0% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    100% {
+        opacity: 0;
+        transform: scale(0.8);
+    }
+}
+
+@keyframes buttonSlideOut {
+    0% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+    100% {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
 }
 
 /* Enhanced Image Tooltips */

@@ -300,12 +300,163 @@ function promoteFile(fileId) {
     .then(data => {
         if (data.result === 'success') {
             showMessage(`File ${fileId} promoted to group original`, 'success');
-            setTimeout(() => location.reload(), 1500);
+            
+            // Update the UI dynamically instead of reloading
+            updateGroupAfterPromotion(fileId, data.data.group_id, data.data.old_original_id);
+            
         } else {
             showMessage(`Error: ${data.error}`, 'error');
         }
     })
     .catch(error => showMessage(`Network error: ${error}`, 'error'));
+}
+
+function promoteFileFromModal(fileId, groupId) {
+    if (!confirm('Make this image the group original?')) return;
+    
+    fetch('/api/promote-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: fileId })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.result === 'success') {
+            showMessage(`File ${fileId} promoted to group original`, 'success');
+            
+            // Update the UI dynamically
+            updateGroupAfterPromotion(fileId, data.data.group_id, data.data.old_original_id);
+            
+            // Close modal and refresh its content for the new original
+            closeModal();
+            setTimeout(() => showImage(fileId), 300);
+            
+        } else {
+            showMessage(`Error: ${data.error}`, 'error');
+        }
+    })
+    .catch(error => showMessage(`Network error: ${error}`, 'error'));
+}
+
+function updateGroupAfterPromotion(newOriginalId, groupId, oldOriginalId) {
+    console.log(`🔄 Updating group ${groupId}: ${oldOriginalId} → ${newOriginalId}`);
+    
+    // Find all cards in the same group
+    const allCards = document.querySelectorAll(`[data-file-id]`);
+    let cardsInGroup = [];
+    
+    // First, identify all cards in this group
+    allCards.forEach(card => {
+        const cardFileId = parseInt(card.getAttribute('data-file-id'));
+        
+        // Check if this card is in the target group
+        // We need to check both data-group-id attribute and by looking for the group container
+        const groupContainer = card.closest(`[data-group-id="${groupId}"]`);
+        const cardGroupId = card.getAttribute('data-group-id');
+        
+        if (groupContainer || (cardGroupId && parseInt(cardGroupId) === groupId)) {
+            cardsInGroup.push({card, fileId: cardFileId});
+            console.log(`📋 Found card in group ${groupId}: File ${cardFileId}`);
+        }
+    });
+    
+    console.log(`📊 Found ${cardsInGroup.length} cards in group ${groupId}`);
+    
+    cardsInGroup.forEach(({card, fileId}) => {
+        // Remove original styling and badge from old original
+        if (fileId === oldOriginalId) {
+            console.log(`📤 Removing original status from file ${fileId}`);
+            
+            card.classList.remove('original');
+            const oldBadge = card.querySelector('.original-badge');
+            if (oldBadge) {
+                oldBadge.style.animation = 'badgeDisappear 0.3s ease-out forwards';
+                setTimeout(() => oldBadge.remove(), 300);
+            }
+            
+            // Add promote button back to old original (if in groups view)
+            const actions = card.querySelector('.image-actions');
+            if (actions && !actions.querySelector('.btn-promote')) {
+                const promoteBtn = document.createElement('button');
+                promoteBtn.className = 'btn btn-promote';
+                promoteBtn.onclick = () => promoteFile(fileId);
+                promoteBtn.innerHTML = '👑 Make Original';
+                promoteBtn.style.animation = 'buttonSlideIn 0.3s ease-out';
+                actions.appendChild(promoteBtn);
+            }
+        }
+        
+        // Add original styling and badge to new original
+        if (fileId === newOriginalId) {
+            console.log(`📥 Adding original status to file ${fileId}`);
+            
+            card.classList.add('original');
+            
+            // Add original badge if not present
+            const imageContainer = card.querySelector('.image-container, .single-image');
+            if (imageContainer && !imageContainer.querySelector('.original-badge')) {
+                const badge = document.createElement('div');
+                badge.className = 'original-badge';
+                badge.textContent = 'ORIGINAL';
+                badge.style.animation = 'badgeAppear 0.5s ease-out';
+                imageContainer.appendChild(badge);
+            }
+            
+            // Remove promote button from new original
+            const promoteBtn = card.querySelector('.btn-promote');
+            if (promoteBtn) {
+                promoteBtn.style.animation = 'buttonSlideOut 0.3s ease-out forwards';
+                setTimeout(() => promoteBtn.remove(), 300);
+            }
+        }
+    });
+    
+    // Update tooltips for affected images
+    setTimeout(() => {
+        updateImageTooltip(newOriginalId);
+        if (oldOriginalId) {
+            updateImageTooltip(oldOriginalId);
+        }
+    }, 100);
+    
+    console.log(`✅ Group ${groupId} promotion update complete`);
+}
+
+function updateImageTooltip(fileId) {
+    // Find the image and update its tooltip
+    const card = document.querySelector(`[data-file-id="${fileId}"]`);
+    if (card) {
+        const img = card.querySelector('img');
+        if (img) {
+            // Refresh the tooltip with updated info
+            fetch(`/api/file-info/${fileId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data && !data.error) {
+                        const filename = data.path_on_drive ? data.path_on_drive.split('/').pop() : 'Unknown';
+                        const completePath = data.complete_path || data.path_on_drive || 'Unknown path';
+                        const sizeMB = data.size_bytes ? (data.size_bytes / 1024 / 1024).toFixed(1) : 'Unknown';
+                        const dimensions = data.width && data.height ? `${data.width} × ${data.height}` : 'Unknown';
+                        
+                        const tooltipText = `${filename}
+
+📏 ${dimensions} • 📦 ${sizeMB} MB • 🏷️ ${data.review_status}
+${data.group_id ? `👥 Group ${data.group_id}` : '📄 Single file'} • 💿 ${data.drive_label || 'Unknown'}
+${data.is_original ? '👑 GROUP ORIGINAL' : ''}
+
+📁 ${completePath}
+
+💡 Click to view full size`;
+
+                        img.title = tooltipText;
+                        img.setAttribute('data-tooltip', tooltipText);
+                    }
+                })
+                .catch(error => {
+                    console.log('Could not update tooltip:', error);
+                });
+        }
+    }
 }
 
 // UI helpers

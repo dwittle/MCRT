@@ -29,15 +29,15 @@
 {% if pagination.total_pages > 1 %}
 <div class="pagination">
     {% if pagination.has_prev %}
-    <a href="{{ url_for('view_groups', page=1, status=status_filter) }}" class="btn btn-sm">⏮️ First</a>
-    <a href="{{ url_for('view_groups', page=pagination.page-1, status=status_filter) }}" class="btn btn-sm">⏪ Previous</a>
+    <a href="{{ url_for('view_groups', page=1, status=status_filter) }}" class="btn btn-sm">⮐ First</a>
+    <a href="{{ url_for('view_groups', page=pagination.page-1, status=status_filter) }}" class="btn btn-sm">⪡ Previous</a>
     {% endif %}
     
     <span class="current">Page {{ pagination.page }} of {{ pagination.total_pages }}</span>
     
     {% if pagination.has_next %}
-    <a href="{{ url_for('view_groups', page=pagination.page+1, status=status_filter) }}" class="btn btn-sm">Next ⏩</a>
-    <a href="{{ url_for('view_groups', page=pagination.total_pages, status=status_filter) }}" class="btn btn-sm">Last ⏭️</a>
+    <a href="{{ url_for('view_groups', page=pagination.page+1, status=status_filter) }}" class="btn btn-sm">Next ⪢</a>
+    <a href="{{ url_for('view_groups', page=pagination.total_pages, status=status_filter) }}" class="btn btn-sm">Last ⮑</a>
     {% endif %}
 </div>
 {% endif %}
@@ -74,7 +74,9 @@
     
     <div class="image-grid">
         {% for file in files %}
-        <div class="image-card {% if file.is_original %}original{% endif %}" data-file-id="{{ file.file_id }}">
+        <div class="image-card {% if file.is_original %}original{% endif %}" 
+             data-file-id="{{ file.file_id }}" 
+             data-group-id="{{ group.group_id }}">
             <div class="image-container" onclick="showImage({{ file.file_id }})">
                 <img src="{{ url_for('serve_thumbnail', file_id=file.file_id) }}" 
                      alt="Image {{ file.file_id }}" 
@@ -99,7 +101,7 @@
                 
                 <div class="image-actions">
                     {% if not file.is_original %}
-                    <button class="btn btn-promote" onclick="promoteFile({{ file.file_id }})">
+                    <button class="btn btn-promote" onclick="promoteFileInGroup({{ file.file_id }}, {{ group.group_id }})">
                         👑 Make Original
                     </button>
                     {% endif %}
@@ -117,15 +119,15 @@
 {% if pagination.total_pages > 1 %}
 <div class="pagination">
     {% if pagination.has_prev %}
-    <a href="{{ url_for('view_groups', page=1, status=status_filter) }}" class="btn btn-sm">⏮️ First</a>
-    <a href="{{ url_for('view_groups', page=pagination.page-1, status=status_filter) }}" class="btn btn-sm">⏪ Previous</a>
+    <a href="{{ url_for('view_groups', page=1, status=status_filter) }}" class="btn btn-sm">⮐ First</a>
+    <a href="{{ url_for('view_groups', page=pagination.page-1, status=status_filter) }}" class="btn btn-sm">⪡ Previous</a>
     {% endif %}
     
     <span class="current">Page {{ pagination.page }} of {{ pagination.total_pages }}</span>
     
     {% if pagination.has_next %}
-    <a href="{{ url_for('view_groups', page=pagination.page+1, status=status_filter) }}" class="btn btn-sm">Next ⏩</a>
-    <a href="{{ url_for('view_groups', page=pagination.total_pages, status=status_filter) }}" class="btn btn-sm">Last ⏭️</a>
+    <a href="{{ url_for('view_groups', page=pagination.page+1, status=status_filter) }}" class="btn btn-sm">Next ⪢</a>
+    <a href="{{ url_for('view_groups', page=pagination.total_pages, status=status_filter) }}" class="btn btn-sm">Last ⮑</a>
     {% endif %}
 </div>
 {% endif %}
@@ -152,7 +154,36 @@ function changeStatusFilter(status) {
     window.location.href = `{{ url_for('view_groups') }}?status=${status}&page=1`;
 }
 
-// Groups-specific JavaScript
+// Groups-specific function that doesn't reload the page
+function promoteFileInGroup(fileId, groupId) {
+    if (!confirm('Make this image the group original?')) return;
+    
+    console.log(`🔄 Promoting file ${fileId} in group ${groupId}`);
+    
+    fetch('/api/promote-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: fileId })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.result === 'success') {
+            showMessage(`File ${fileId} promoted to group original`, 'success');
+            
+            // Update the UI dynamically - no page reload!
+            updateGroupAfterPromotion(fileId, data.data.group_id, data.data.old_original_id);
+            
+        } else {
+            showMessage(`Error: ${data.error}`, 'error');
+        }
+    })
+    .catch(error => {
+        console.error('Promote error:', error);
+        showMessage(`Network error: ${error}`, 'error');
+    });
+}
+
+// Keep the existing markGroup function
 function markGroup(groupId, status) {
     fetch('/api/mark-group', {
         method: 'POST',
@@ -169,26 +200,6 @@ function markGroup(groupId, status) {
                 badge.className = `status-badge status-${status}`;
                 badge.textContent = status;
             });
-        } else {
-            showMessage(`Error: ${data.error}`, 'error');
-        }
-    })
-    .catch(error => showMessage(`Network error: ${error}`, 'error'));
-}
-
-function promoteFile(fileId) {
-    if (!confirm('Make this image the group original?')) return;
-    
-    fetch('/api/promote-file', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_id: fileId })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.result === 'success') {
-            showMessage(`File ${fileId} promoted to group original`, 'success');
-            setTimeout(() => location.reload(), 1500);
         } else {
             showMessage(`Error: ${data.error}`, 'error');
         }
