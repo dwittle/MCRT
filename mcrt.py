@@ -433,7 +433,7 @@ class FeatureExtractor:
                 except Exception as e:
                     # Debug why image processing is failing
                     print(f"Image processing failed for {file_path}: {e}", file=sys.stderr)
-                    pass
+                    return None
             
             return record
             
