@@ -5,33 +5,48 @@
 {% block content %}
 <h2>Collection Overview</h2>
 
+{% if error_message %}
+<div class="error-box">
+    <h3>⚠️ CLI Connection Issue</h3>
+    <p>The dashboard is running with fallback data because the CLI interface encountered an error:</p>
+    <pre style="background: #f5f5f5; padding: 10px; border-radius: 4px; white-space: pre-wrap;">{{ error_message }}</pre>
+    
+    <div style="margin-top: 16px;">
+        <a href="/debug/info" class="btn btn-secondary">🔧 View Debug Info</a>
+        <a href="/health" class="btn btn-secondary">🏥 Health Check</a>
+        <button class="btn btn-secondary" onclick="location.reload()">🔄 Retry</button>
+    </div>
+</div>
+{% endif %}
+
 <div class="stats-grid">
     <div class="stat-card">
-        <div class="number">{{ "{:,}".format(stats.files.total) if stats.files.total else "0" }}</div>
+        <div class="number">{{ "{:,}".format(stats.files.total) if stats.files and stats.files.total else "0" }}</div>
         <div class="label">Total Files</div>
     </div>
     <div class="stat-card">
-        <div class="number">{{ "{:,}".format(stats.groups.total) if stats.groups.total else "0" }}</div>
+        <div class="number">{{ "{:,}".format(stats.groups.total) if stats.groups and stats.groups.total else "0" }}</div>
         <div class="label">Groups</div>
     </div>
     <div class="stat-card">
-        <div class="number">{{ "{:,}".format(stats.review_status.keep) if stats.review_status.keep else "0" }}</div>
+        <div class="number">{{ "{:,}".format(stats.review_status.keep) if stats.review_status and stats.review_status.keep else "0" }}</div>
         <div class="label">✅ Marked Keep</div>
     </div>
     <div class="stat-card">
-        <div class="number">{{ "{:,}".format(stats.review_status.not_needed) if stats.review_status.not_needed else "0" }}</div>
+        <div class="number">{{ "{:,}".format(stats.review_status.not_needed) if stats.review_status and stats.review_status.not_needed else "0" }}</div>
         <div class="label">❌ Not Needed</div>
     </div>
     <div class="stat-card">
-        <div class="number">{{ "{:,}".format(stats.review_status.undecided) if stats.review_status.undecided else "0" }}</div>
+        <div class="number">{{ "{:,}".format(stats.review_status.undecided) if stats.review_status and stats.review_status.undecided else "0" }}</div>
         <div class="label">⏳ Need Review</div>
     </div>
     <div class="stat-card">
-        <div class="number">{{ "{:.1f} GB".format(stats.storage.total_gb) if stats.storage.total_gb else "0.0 GB" }}</div>
+        <div class="number">{{ "{:.1f} GB".format(stats.storage.total_gb) if stats.storage and stats.storage.total_gb else "0.0 GB" }}</div>
         <div class="label">Total Size</div>
     </div>
 </div>
 
+{% if not error_message %}
 <h3>Review Workflow</h3>
 <div class="actions">
     <a href="{{ url_for('view_groups', status='undecided') }}" class="btn btn-primary">
@@ -105,12 +120,52 @@
     </div>
 </div>
 {% endif %}
+
+{% else %}
+<!-- Error mode - show troubleshooting -->
+<div class="info-box">
+    <h4>🔧 Troubleshooting</h4>
+    <p>To resolve the CLI connection issue, try these steps:</p>
+    
+    <ol style="margin-left: 20px; line-height: 1.6;">
+        <li><strong>Check that the CLI script exists:</strong>
+            <pre style="background: #f0f0f0; padding: 8px; margin: 8px 0;">ls -la media_tool_cli.py</pre>
+        </li>
+        
+        <li><strong>Make sure it's executable:</strong>
+            <pre style="background: #f0f0f0; padding: 8px; margin: 8px 0;">chmod +x media_tool_cli.py</pre>
+        </li>
+        
+        <li><strong>Test the CLI directly:</strong>
+            <pre style="background: #f0f0f0; padding: 8px; margin: 8px 0;">./media_tool_cli.py --help</pre>
+        </li>
+        
+        <li><strong>Check if you have a database:</strong>
+            <pre style="background: #f0f0f0; padding: 8px; margin: 8px 0;">ls -la media_index.db</pre>
+        </li>
+        
+        <li><strong>If no database exists, run a scan first:</strong>
+            <pre style="background: #f0f0f0; padding: 8px; margin: 8px 0;">./media_tool_cli.py scan --source /path/to/photos --central ./data</pre>
+        </li>
+        
+        <li><strong>Check Python dependencies:</strong>
+            <pre style="background: #f0f0f0; padding: 8px; margin: 8px 0;">pip install -r requirements.txt</pre>
+        </li>
+    </ol>
+    
+    <div style="margin-top: 16px;">
+        <a href="/debug/info" class="btn btn-primary">🔧 View Debug Information</a>
+        <a href="/health" class="btn btn-secondary">🏥 System Health Check</a>
+    </div>
+</div>
+{% endif %}
+
 {% endblock %}
 
 {% block extra_scripts %}
 <script>
 // Auto-refresh stats every 30 seconds if reviewing
-{% if stats.review_status and stats.review_status.undecided and stats.review_status.undecided > 0 %}
+{% if stats.review_status and stats.review_status.undecided and stats.review_status.undecided > 0 and not error_message %}
 setInterval(() => {
     fetch('/api/stats?detailed=true')
         .then(response => response.json())
@@ -122,6 +177,12 @@ setInterval(() => {
         })
         .catch(error => console.log('Stats refresh error:', error));
 }, 30000);
+{% endif %}
+
+// Debug mode indicator
+{% if error_message %}
+console.log('Dashboard running in fallback mode due to CLI error');
+console.log('Visit /debug/info for detailed debugging information');
 {% endif %}
 </script>
 {% endblock %}

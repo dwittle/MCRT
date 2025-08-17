@@ -1,6 +1,6 @@
 /**
  * Media Review Tool - Complete JavaScript Functionality
- * Handles all UI interactions, image viewing, and API calls
+ * Handles all UI interactions, image viewing, API calls, and enhanced error handling
  */
 
 // Global state
@@ -11,10 +11,50 @@ let currentImages = [];
 document.addEventListener('DOMContentLoaded', function() {
     initializeImageNavigation();
     initializeKeyboardShortcuts();
+    setupImageErrorHandling();
+    setupAdvancedLazyLoading();
     checkForUpdates();
+    addImageStateCSS();
 });
 
-// Image viewing and modal functionality
+// Enhanced image loading with better error handling
+function setupImageErrorHandling() {
+    // Handle image load errors gracefully
+    const images = document.querySelectorAll('img[src*="/image/"], img[src*="/thumbnail/"]');
+    
+    images.forEach(img => {
+        // Add loading state
+        img.classList.add('loading');
+        
+        img.addEventListener('load', function() {
+            img.classList.remove('loading');
+            img.classList.add('loaded');
+            
+            // Check if this is actually a placeholder image
+            const errorReason = img.getAttribute('data-error');
+            if (errorReason) {
+                img.classList.add('placeholder');
+                console.log(`Image ${img.src} loaded as placeholder: ${errorReason}`);
+            }
+        });
+        
+        img.addEventListener('error', function() {
+            console.log(`Image failed to load: ${img.src}`);
+            img.classList.remove('loading');
+            img.classList.add('error');
+            
+            // The server should now return a placeholder instead of 404
+            // But just in case, we can handle it here too
+            if (!img.src.includes('placeholder=true')) {
+                // Try to reload with placeholder parameter
+                const originalSrc = img.src;
+                img.src = originalSrc + (originalSrc.includes('?') ? '&' : '?') + 'placeholder=true';
+            }
+        });
+    });
+}
+
+// Enhanced image modal with error handling
 function showImage(fileId) {
     const modal = document.getElementById('imageModal');
     const img = document.getElementById('modalImage');
@@ -25,26 +65,69 @@ function showImage(fileId) {
     img.style.display = 'none';
     document.querySelector('.modal-info').style.display = 'none';
     loading.style.display = 'block';
+    loading.textContent = 'Loading image...';
     
-    // Load full-size image
+    // Reset image state
+    img.classList.remove('placeholder', 'error');
+    img.onload = null;
+    img.onerror = null;
+    
+    // Enhanced load handler
     img.onload = function() {
         loading.style.display = 'none';
         img.style.display = 'block';
         document.querySelector('.modal-info').style.display = 'block';
+        
+        // Check response headers for error information
+        fetch(`/image/${fileId}`, {method: 'HEAD'})
+            .then(response => {
+                const errorReason = response.headers.get('X-Error-Reason');
+                if (errorReason) {
+                    // This is a placeholder image
+                    img.classList.add('placeholder');
+                    
+                    // Add error info to the modal
+                    const errorDiv = document.createElement('div');
+                    errorDiv.className = 'error-notice';
+                    errorDiv.innerHTML = `
+                        <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 12px; margin-bottom: 16px;">
+                            <strong>⚠️ Image Issue:</strong> ${errorReason}
+                        </div>
+                    `;
+                    info.insertBefore(errorDiv, info.firstChild);
+                }
+            })
+            .catch(err => {
+                console.log('Could not check image headers:', err);
+            });
     };
     
+    // Enhanced error handler
     img.onerror = function() {
-        loading.innerHTML = 'Error loading image';
+        loading.style.display = 'none';
+        img.style.display = 'block';
+        img.classList.add('error');
+        document.querySelector('.modal-info').style.display = 'block';
+        
+        // Show error message
+        info.innerHTML = `
+            <div class="error-notice">
+                <div style="background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 4px; padding: 12px;">
+                    <strong>❌ Error:</strong> Could not load image ${fileId}
+                </div>
+            </div>
+        `;
     };
     
+    // Set image source
     img.src = `/image/${fileId}`;
     
-    // Load file info via API
+    // Load file info via API (this should still work even if image is missing)
     fetch(`/api/file-info/${fileId}`)
         .then(response => response.json())
         .then(data => {
             if (data.error) {
-                info.innerHTML = `<p>Error: ${data.error}</p>`;
+                info.innerHTML += `<div class="error-notice"><p>File info error: ${data.error}</p></div>`;
                 return;
             }
             
@@ -54,7 +137,7 @@ function showImage(fileId) {
             const sizeMB = data.size_bytes ? 
                 (data.size_bytes / 1024 / 1024).toFixed(1) : 'Unknown';
             
-            info.innerHTML = `
+            const fileInfoHtml = `
                 <h3>${filename}</h3>
                 <div class="file-details">
                     <p><strong>Dimensions:</strong> ${data.width || '?'} × ${data.height || '?'} (${megapixels} MP)</p>
@@ -62,11 +145,21 @@ function showImage(fileId) {
                     <p><strong>Status:</strong> <span class="status-badge status-${data.review_status}">${data.review_status}</span></p>
                     ${data.is_original ? '<p><strong>🏆 Group Original</strong></p>' : ''}
                     ${data.drive_label ? `<p><strong>Drive:</strong> ${data.drive_label}</p>` : ''}
+                    <p><strong>File ID:</strong> ${fileId}</p>
                 </div>
             `;
+            
+            // Add file info after any error notices
+            const existingError = info.querySelector('.error-notice');
+            if (existingError) {
+                existingError.insertAdjacentHTML('afterend', fileInfoHtml);
+            } else {
+                info.innerHTML = fileInfoHtml;
+            }
         })
         .catch(err => {
-            info.innerHTML = '<p>Error loading file information</p>';
+            console.error('Error loading file info:', err);
+            info.innerHTML += `<div class="error-notice"><p>Could not load file information</p></div>`;
         });
 }
 
@@ -74,6 +167,11 @@ function closeModal() {
     const modal = document.getElementById('imageModal');
     modal.style.display = 'none';
     document.getElementById('modalImage').src = '';
+    
+    // Clear any error notices
+    const info = document.getElementById('modalInfo');
+    const errorNotices = info.querySelectorAll('.error-notice');
+    errorNotices.forEach(notice => notice.remove());
 }
 
 // File and group marking
@@ -304,6 +402,147 @@ function refreshStatsIfNeeded() {
         });
 }
 
+// Image lazy loading with error handling
+function setupAdvancedLazyLoading() {
+    if ('IntersectionObserver' in window) {
+        const imageObserver = new IntersectionObserver(function(entries, observer) {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    const img = entry.target;
+                    const src = img.dataset.src || img.src;
+                    
+                    img.classList.add('loading');
+                    
+                    img.onload = function() {
+                        img.classList.remove('lazy', 'loading');
+                        img.classList.add('loaded');
+                    };
+                    
+                    img.onerror = function() {
+                        img.classList.remove('loading');
+                        img.classList.add('error');
+                        console.log(`Lazy image failed: ${src}`);
+                    };
+                    
+                    img.src = src;
+                    observer.unobserve(img);
+                }
+            });
+        }, {
+            // Load images when they're 50px away from viewport
+            rootMargin: '50px'
+        });
+        
+        document.querySelectorAll('img[data-src], img.lazy').forEach(img => {
+            imageObserver.observe(img);
+        });
+    }
+}
+
+// Add CSS styles for image states
+function addImageStateCSS() {
+    const imageStateCSS = `
+        <style id="image-state-css">
+        .image-container img.loading,
+        .single-image img.loading {
+            opacity: 0.6;
+            background: #f0f0f0;
+        }
+        
+        .image-container img.error,
+        .single-image img.error {
+            opacity: 0.8;
+            border: 2px dashed #ff6b6b;
+        }
+        
+        .image-container img.placeholder,
+        .single-image img.placeholder {
+            opacity: 0.9;
+            border: 1px solid #ffd93d;
+        }
+        
+        .error-notice {
+            margin-bottom: 16px;
+        }
+        
+        .error-notice div {
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+        
+        /* Loading spinner effect */
+        .image-container.loading::after,
+        .single-image.loading::after {
+            content: "Loading...";
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 255, 255, 0.9);
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: #666;
+            pointer-events: none;
+        }
+        
+        /* Placeholder image styling */
+        .modal img.placeholder {
+            border: 2px dashed #ffd93d;
+            background: #fffbf0;
+        }
+        
+        /* Error state styling */
+        .modal img.error {
+            border: 2px dashed #ff6b6b;
+            background: #fff5f5;
+        }
+        
+        /* Image loading states */
+        .image-container,
+        .single-image {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .image-container img,
+        .single-image img {
+            transition: opacity 0.3s ease;
+        }
+        
+        /* Status badges for different image states */
+        .image-container .image-status,
+        .single-image .image-status {
+            position: absolute;
+            bottom: 8px;
+            left: 8px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+        
+        .image-container .image-status.missing,
+        .single-image .image-status.missing {
+            background: rgba(255, 193, 7, 0.9);
+            color: #000;
+        }
+        
+        .image-container .image-status.error,
+        .single-image .image-status.error {
+            background: rgba(220, 53, 69, 0.9);
+        }
+        </style>
+    `;
+    
+    // Only add if not already present
+    if (!document.getElementById('image-state-css')) {
+        document.head.insertAdjacentHTML('beforeend', imageStateCSS);
+    }
+}
+
 // Utility functions
 function formatFileSize(bytes) {
     if (bytes === 0) return '0 B';
@@ -334,35 +573,54 @@ function downloadFile(url, filename) {
     document.body.removeChild(link);
 }
 
+// Enhanced error handling for network requests
+function handleNetworkError(error, context) {
+    console.error(`Network error in ${context}:`, error);
+    
+    let message = 'Network error occurred';
+    if (error.message) {
+        message += `: ${error.message}`;
+    }
+    
+    showMessage(message, 'error');
+}
+
 // Global error handler
 window.addEventListener('error', function(e) {
     console.error('JavaScript error:', e.error);
-    showMessage('An unexpected error occurred. Check the console for details.', 'error');
+    
+    // Only show user-facing errors for critical issues
+    if (e.error && e.error.message && !e.error.message.includes('ResizeObserver')) {
+        showMessage('An unexpected error occurred. Check the console for details.', 'error');
+    }
 });
 
-// Performance optimization - lazy load images
-function setupLazyLoading() {
-    if ('IntersectionObserver' in window) {
-        const imageObserver = new IntersectionObserver(function(entries, observer) {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    const img = entry.target;
-                    img.src = img.dataset.src;
-                    img.classList.remove('lazy');
-                    observer.unobserve(img);
-                }
-            });
-        });
-        
-        document.querySelectorAll('img[data-src]').forEach(img => {
-            imageObserver.observe(img);
-        });
+// Unhandled promise rejection handler
+window.addEventListener('unhandledrejection', function(e) {
+    console.error('Unhandled promise rejection:', e.reason);
+    
+    // Don't show all promise rejections to users, just log them
+    if (e.reason && typeof e.reason === 'object' && e.reason.message) {
+        console.error('Promise rejection details:', e.reason.message);
     }
-}
+});
 
-// Initialize lazy loading if supported
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', setupLazyLoading);
-} else {
-    setupLazyLoading();
+// Debug helpers (only in development)
+if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    // Add debug helpers
+    window.debugMRT = {
+        currentImages: () => currentImages,
+        currentIndex: () => currentImageIndex,
+        showImage: showImage,
+        markFile: markFile,
+        markGroup: markGroup,
+        testPlaceholder: (fileId) => {
+            const img = new Image();
+            img.onload = () => console.log(`Placeholder for ${fileId} loaded`);
+            img.onerror = () => console.log(`Placeholder for ${fileId} failed`);
+            img.src = `/image/${fileId}`;
+        }
+    };
+    
+    console.log('🔧 Debug helpers available: window.debugMRT');
 }

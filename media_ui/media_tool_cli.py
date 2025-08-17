@@ -163,7 +163,14 @@ def cmd_stats(args):
                     GROUP BY group_id
                 )
             """).fetchone()
-            group_stats = dict(group_breakdown) if group_breakdown else {}
+            
+            if group_breakdown:
+                group_stats = {
+                    'single_file_groups': group_breakdown[0] or 0,
+                    'multi_file_groups': group_breakdown[1] or 0,
+                    'largest_group_size': group_breakdown[2] or 0,
+                    'avg_group_size': group_breakdown[3] or 0
+                }
         
         # Prepare JSON data
         json_data = {
@@ -218,6 +225,13 @@ def cmd_stats(args):
             avg_mb = size_stats[2] / (1024**2) if size_stats[2] else 0
             print(f"Storage: {total_gb:.1f} GB total, {avg_mb:.1f} MB average")
             print(f"Large files (>500MB): {size_stats[3]:,}")
+            
+        if args.detailed and group_stats:
+            print(f"\nGroup Details:")
+            print(f"  Single-file groups: {group_stats.get('single_file_groups', 0):,}")
+            print(f"  Multi-file groups: {group_stats.get('multi_file_groups', 0):,}")
+            print(f"  Largest group: {group_stats.get('largest_group_size', 0)} files")
+            print(f"  Average group size: {group_stats.get('avg_group_size', 0):.1f} files")
 
 def cmd_review_queue(args):
     """Show review queue with optional JSON output."""
