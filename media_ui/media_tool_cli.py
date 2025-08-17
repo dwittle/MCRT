@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Complete Media Tool CLI with JSON support and all enhancements.
+Complete Media Tool CLI with JSON support, auto-promotion, and all enhancements.
 Supports: scanning, review, bulk operations, export, JSON output for UI integration.
 """
 
@@ -82,6 +82,109 @@ def format_file_size(bytes_value):
     else:
         return f"{size:.1f} {units[unit_index]}"
 
+def check_auto_promotion(db_manager, file_id, json_mode=False):
+    """
+    Check if a file should be auto-promoted to original after marking.
+    
+    Auto-promotion happens when:
+    1. All other files in a group are marked "not_needed"
+    2. Only one file remains that is not "not_needed"
+    3. That file is not already the original
+    
+    Args:
+        db_manager: Database manager instance
+        file_id: The file that was just marked
+        json_mode: If True, suppress debug prints for JSON output
+    """
+    
+    with db_manager.get_connection() as conn:
+        # Get the group_id for this file
+        file_info = conn.execute("""
+            SELECT group_id FROM files WHERE file_id = ?
+        """, (file_id,)).fetchone()
+        
+        if not file_info or not file_info[0]:
+            # File is not in a group, no auto-promotion needed
+            return None
+        
+        group_id = file_info[0]
+        
+        # Get all files in this group with their current status
+        group_files = conn.execute("""
+            SELECT file_id, review_status, 
+                   CASE WHEN file_id = g.original_file_id THEN 1 ELSE 0 END as is_original
+            FROM files f
+            JOIN groups g ON g.group_id = f.group_id
+            WHERE f.group_id = ?
+        """, (group_id,)).fetchall()
+        
+        if len(group_files) <= 1:
+            # Single file group, no auto-promotion needed
+            return None
+        
+        # Count files by status
+        not_needed_files = [f for f in group_files if f[1] == 'not_needed']
+        remaining_files = [f for f in group_files if f[1] != 'not_needed']
+        current_original = [f for f in group_files if f[2] == 1]
+        
+        # Only print debug info if not in JSON mode
+        if not json_mode:
+            print(f"🔍 Group {group_id} auto-promotion check:")
+            print(f"   Total files: {len(group_files)}")
+            print(f"   Not needed: {len(not_needed_files)}")
+            print(f"   Remaining: {len(remaining_files)}")
+            print(f"   Current original: {current_original[0][0] if current_original else 'None'}")
+        
+        # Auto-promotion condition: exactly 1 file remaining that's not marked "not_needed"
+        if len(remaining_files) == 1:
+            last_file_id, last_file_status, last_file_is_original = remaining_files[0]
+            
+            # Only promote if it's not already the original
+            if not last_file_is_original:
+                if not json_mode:
+                    print(f"🎯 Auto-promoting file {last_file_id} in group {group_id} (last remaining)")
+                
+                # Update the group's original_file_id
+                conn.execute("""
+                    UPDATE groups SET original_file_id = ? WHERE group_id = ?
+                """, (last_file_id, group_id))
+                
+                # Clear duplicate_of for the new original
+                conn.execute("""
+                    UPDATE files SET duplicate_of = NULL WHERE file_id = ?
+                """, (last_file_id,))
+                
+                # Set old original as duplicate of new original (if there was one)
+                if current_original:
+                    old_original_id = current_original[0][0]
+                    conn.execute("""
+                        UPDATE files SET duplicate_of = ? WHERE file_id = ?
+                    """, (last_file_id, old_original_id))
+                
+                # Update all other files in group to be duplicates of new original
+                conn.execute("""
+                    UPDATE files SET duplicate_of = ? 
+                    WHERE group_id = ? AND file_id != ?
+                """, (last_file_id, group_id, last_file_id))
+                
+                conn.commit()
+                
+                return {
+                    'auto_promoted': True,
+                    'new_original_id': last_file_id,
+                    'old_original_id': current_original[0][0] if current_original else None,
+                    'group_id': group_id,
+                    'reason': 'last_remaining_file'
+                }
+            else:
+                if not json_mode:
+                    print(f"ℹ️ File {last_file_id} already original in group {group_id}")
+        else:
+            if not json_mode:
+                print(f"ℹ️ No auto-promotion: {len(remaining_files)} files still unmarked in group {group_id}")
+    
+    return None
+
 def cmd_scan(args):
     """Execute scan command with optional size filtering."""
     
@@ -90,7 +193,7 @@ def cmd_scan(args):
     if args.min_size:
         try:
             min_size_bytes = parse_file_size(args.min_size)
-            print(f"📏 Minimum file size filter: {format_file_size(min_size_bytes)} ({min_size_bytes:,} bytes)")
+            print(f"🔍 Minimum file size filter: {format_file_size(min_size_bytes)} ({min_size_bytes:,} bytes)")
             print(f"   Files smaller than this will be ignored during scan")
         except ValueError as e:
             print(f"❌ Error: {e}")
@@ -596,6 +699,35 @@ def cmd_bulk_mark(args):
         conn.commit()
         updated_count = cursor.rowcount
         
+        # Check for auto-promotions if we marked files as "not_needed"
+        auto_promotions = []
+        if args.status == 'not_needed' and not args.json:
+            print(f"\n🔍 Checking for auto-promotion opportunities...")
+            
+            # Get unique group IDs that were affected
+            if use_regex and matching_file_ids:
+                placeholders = ','.join(['?' for _ in matching_file_ids])
+                affected_groups = conn.execute(f"""
+                    SELECT DISTINCT group_id FROM files 
+                    WHERE file_id IN ({placeholders}) AND group_id IS NOT NULL
+                """, matching_file_ids).fetchall()
+            else:
+                affected_groups = conn.execute("""
+                    SELECT DISTINCT group_id FROM files 
+                    WHERE LOWER(path_on_drive) LIKE LOWER(?) AND group_id IS NOT NULL
+                """, (like_pattern,)).fetchall()
+            
+            for (group_id,) in affected_groups:
+                # Check one file from this group for auto-promotion
+                sample_file = conn.execute("""
+                    SELECT file_id FROM files WHERE group_id = ? LIMIT 1
+                """, (group_id,)).fetchone()
+                
+                if sample_file:
+                    auto_promo = check_auto_promotion(db_manager, sample_file[0], json_mode=False)
+                    if auto_promo:
+                        auto_promotions.append(auto_promo)
+        
         # Prepare result data
         result_data = {
             "command": "bulk-mark",
@@ -608,7 +740,8 @@ def cmd_bulk_mark(args):
                 "status_changes": {k: v for k, v in status_groups.items() if k != args.status},
                 "files_updated": updated_count,
                 "files_unchanged": already_correct,
-                "files_affected": total_matches
+                "files_affected": total_matches,
+                "auto_promotions": auto_promotions
             },
             "result": "success"
         }
@@ -619,7 +752,7 @@ def cmd_bulk_mark(args):
             try:
                 from tabulate import tabulate
                 
-                print(f"📝 BULK MARKING: {total_matches:,} files → '{args.status}'")
+                print(f"🔍 BULK MARKING: {total_matches:,} files → '{args.status}'")
                 
                 if status_groups:
                     change_data = [[old_status, args.status, f"{count:,}"] 
@@ -639,11 +772,18 @@ def cmd_bulk_mark(args):
                 print(f"\n✅ BULK MARK COMPLETED:")
                 print(tabulate(result_table, tablefmt="plain"))
                 
+                if auto_promotions:
+                    print(f"\n🎯 AUTO-PROMOTIONS ({len(auto_promotions)} groups):")
+                    for promo in auto_promotions:
+                        print(f"   Group {promo['group_id']}: File {promo['new_original_id']} → Original")
+                
             except ImportError:
                 print(f"✅ Bulk marked {updated_count:,} files matching '{pattern}' as {args.status}")
+                if auto_promotions:
+                    print(f"🎯 Auto-promoted {len(auto_promotions)} files to original")
 
 def cmd_mark(args):
-    """Mark file with optional JSON output."""
+    """Mark file with optional JSON output and auto-promotion."""
     db_manager = DatabaseManager(Path(args.db))
     
     if args.status not in ['undecided', 'keep', 'not_needed']:
@@ -683,6 +823,11 @@ def cmd_mark(args):
                     (args.status, timestamp, args.note or '', args.file_id))
         conn.commit()
         
+        # Check for auto-promotion if we just marked something as "not_needed"
+        auto_promotion = None
+        if args.status == 'not_needed':
+            auto_promotion = check_auto_promotion(db_manager, args.file_id, json_mode=args.json)
+        
         result_data = {
             "command": "mark",
             "timestamp": timestamp,
@@ -691,7 +836,8 @@ def cmd_mark(args):
                 "old_status": old_status,
                 "new_status": args.status,
                 "note": args.note or "",
-                "changed": old_status != args.status
+                "changed": old_status != args.status,
+                "auto_promotion": auto_promotion
             },
             "result": "success"
         }
@@ -701,8 +847,11 @@ def cmd_mark(args):
         else:
             if old_status != args.status:
                 print(f"✅ File {args.file_id}: {old_status} → {args.status}")
+                
+                if auto_promotion:
+                    print(f"🎯 Auto-promoted file {auto_promotion['new_original_id']} to original (last remaining in group {auto_promotion['group_id']})")
             else:
-                print(f"📝 File {args.file_id} already marked as {args.status}")
+                print(f"ℹ️ File {args.file_id} already marked as {args.status}")
 
 def cmd_mark_group(args):
     """Mark group with optional JSON output."""
@@ -933,7 +1082,7 @@ def cmd_cleanup_checkpoints(args):
 def create_parser():
     """Create argument parser with JSON support."""
     parser = argparse.ArgumentParser(
-        description="Media Consolidation Tool - Complete CLI with JSON Support",
+        description="Media Consolidation Tool - Complete CLI with JSON Support and Auto-Promotion",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -951,6 +1100,9 @@ Examples:
   %(prog)s stats --json
   %(prog)s review-queue --json --limit 50
   %(prog)s bulk-mark --path-like pattern --json
+  
+  # Mark individual files (auto-promotion when appropriate)
+  %(prog)s mark --file-id 123 --status not_needed
         """
     )
     
@@ -986,7 +1138,7 @@ Examples:
     queue_parser.add_argument("--json", action="store_true", help="Output in JSON format")
     
     # BULK-MARK command
-    bulk_mark_parser = subparsers.add_parser("bulk-mark", help="Bulk mark by path pattern")
+    bulk_mark_parser = subparsers.add_parser("bulk-mark", help="Bulk mark by path pattern with auto-promotion")
     bulk_mark_parser.add_argument("--path-like", required=True, help="Path pattern to match")
     bulk_mark_parser.add_argument("--status", choices=['undecided', 'keep', 'not_needed'], 
                                  help="Status to apply (omit for preview)")
@@ -996,7 +1148,7 @@ Examples:
     bulk_mark_parser.add_argument("--json", action="store_true", help="Output in JSON format")
     
     # MARK command
-    mark_parser = subparsers.add_parser("mark", help="Mark file review status")
+    mark_parser = subparsers.add_parser("mark", help="Mark file review status with auto-promotion")
     mark_parser.add_argument("--file-id", type=int, required=True, help="File ID to mark")
     mark_parser.add_argument("--status", choices=['undecided', 'keep', 'not_needed'], required=True)
     mark_parser.add_argument("--note", help="Optional review note")
@@ -1030,7 +1182,7 @@ Examples:
     return parser
 
 def main():
-    """Main CLI entry point with complete command support and JSON output."""
+    """Main CLI entry point with complete command support, JSON output, and auto-promotion."""
     parser = create_parser()
     args = parser.parse_args()
     
