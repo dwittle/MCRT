@@ -593,43 +593,107 @@ class MediaToolCLI:
             }
 
     def get_file_info(self, file_id: int) -> Dict[str, Any]:
-        """Get detailed file information."""
+        """Get detailed file information with complete path display."""
         try:
             import sqlite3
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 
-                file_info = conn.execute("""
+                # First, let's check what columns actually exist
+                cursor = conn.execute("PRAGMA table_info(files)")
+                columns = [row[1] for row in cursor.fetchall()]
+                print(f"🔍 Available columns in files table: {columns}")
+                
+                # Build query with only existing columns
+                base_columns = [
+                    'f.file_id', 'f.path_on_drive', 'f.size_bytes', 'f.width', 'f.height',
+                    'f.review_status', 'f.type', 'f.group_id', 'f.duplicate_of', 
+                    'f.created_at', 'f.is_large'
+                ]
+                
+                # Add optional columns if they exist
+                optional_columns = []
+                if 'review_note' in columns:
+                    optional_columns.append('f.review_note')
+                if 'hash_sha256' in columns:
+                    optional_columns.append('f.hash_sha256')
+                if 'phash' in columns:  # Note: it's 'phash', not 'hash_phash'
+                    optional_columns.append('f.phash')
+                if 'reviewed_at' in columns:
+                    optional_columns.append('f.reviewed_at')
+                
+                all_columns = base_columns + optional_columns
+                
+                # Build the full query
+                query = f"""
                     SELECT 
-                        f.file_id, f.path_on_drive, f.size_bytes, f.width, f.height,
-                        f.review_status, f.type, f.group_id, f.duplicate_of, f.review_note,
-                        f.hash_sha256, f.hash_phash, f.is_large,
-                        d.label as drive_label, d.mount_path,
+                        {', '.join(all_columns)},
+                        d.label as drive_label, 
+                        d.mount_path,
                         CASE WHEN f.file_id = g.original_file_id THEN 1 ELSE 0 END as is_original
                     FROM files f
                     LEFT JOIN drives d ON d.drive_id = f.drive_id
                     LEFT JOIN groups g ON g.group_id = f.group_id
                     WHERE f.file_id = ?
-                """, (file_id,)).fetchone()
+                """
+                
+                print(f"🔍 Executing query for file {file_id}")
+                file_info = conn.execute(query, (file_id,)).fetchone()
                 
                 if not file_info:
                     return {'error': f'File {file_id} not found'}
                 
-                return {
+                # Build complete file path
+                mount_path = file_info['mount_path'] or ''
+                path_on_drive = file_info['path_on_drive'] or ''
+                
+                if mount_path and mount_path.strip():
+                    complete_path = f"{mount_path.rstrip('/')}/{path_on_drive.lstrip('/')}"
+                else:
+                    complete_path = path_on_drive
+                
+                # Helper function to safely get values from sqlite3.Row
+                def safe_get(row, key, default=None):
+                    """Safely get a value from sqlite3.Row, handling missing columns."""
+                    try:
+                        return row[key] if row[key] is not None else default
+                    except (IndexError, KeyError):
+                        return default
+                
+                # Prepare result with safe column access using sqlite3.Row indexing
+                result = {
                     'file_id': file_info['file_id'],
-                    'path_on_drive': file_info['path_on_drive'],
+                    'path_on_drive': path_on_drive,
+                    'complete_path': complete_path,  # Add complete path
+                    'mount_path': mount_path,
                     'size_bytes': file_info['size_bytes'],
                     'width': file_info['width'],
                     'height': file_info['height'],
                     'review_status': file_info['review_status'],
                     'type': file_info['type'],
                     'group_id': file_info['group_id'],
-                    'review_note': file_info['review_note'],
+                    'duplicate_of': file_info['duplicate_of'],
                     'drive_label': file_info['drive_label'],
                     'is_original': bool(file_info['is_original']) if file_info['is_original'] else False,
-                    'is_large': bool(file_info['is_large']) if file_info['is_large'] else False
+                    'is_large': bool(safe_get(file_info, 'is_large', 0)),
+                    'created_at': file_info['created_at'],
                 }
+                
+                # Add optional fields if they exist in the columns
+                if 'review_note' in columns:
+                    result['review_note'] = safe_get(file_info, 'review_note', '')
+                if 'hash_sha256' in columns:
+                    result['hash_sha256'] = safe_get(file_info, 'hash_sha256', '')
+                if 'phash' in columns:
+                    result['phash'] = safe_get(file_info, 'phash', '')
+                if 'reviewed_at' in columns:
+                    result['reviewed_at'] = safe_get(file_info, 'reviewed_at', '')
+                
+                print(f"✅ Successfully retrieved file info for {file_id}")
+                return result
                 
         except Exception as e:
             print(f"❌ Error getting file info: {e}")
+            import traceback
+            traceback.print_exc()
             return {'error': str(e)}
