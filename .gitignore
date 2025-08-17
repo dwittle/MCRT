@@ -209,3 +209,6 @@ __marimo__/
 
 tests/generated/*
 tests/test_db.sqlite
+last_candidates.json
+*.db
+.checkpoints/*
