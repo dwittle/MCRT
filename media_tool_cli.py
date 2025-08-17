@@ -5,7 +5,7 @@ This replaces your current media_tool_cli.py with full functionality.
 """
 
 import argparse
-import sys
+import sys, re
 from pathlib import Path
 
 # Add the current directory to Python path so media_tool can be imported
@@ -17,6 +17,18 @@ from media_tool.database.manager import DatabaseManager
 
 def cmd_scan(args):
     """Execute scan command."""
+    # Parse minimum size if provided
+    min_size_bytes = 0
+    if args.min_size:
+        try:
+            min_size_bytes = parse_file_size(args.min_size)
+            print(f"📏 Minimum file size filter: {format_file_size(min_size_bytes)} ({min_size_bytes:,} bytes)")
+            print(f"   Files smaller than this will be ignored during scan")
+        except ValueError as e:
+            print(f"❌ Error: {e}")
+            print(f"   Examples: '1M' (1 megabyte), '500K' (500 kilobytes), '2.5G' (2.5 gigabytes)")
+            return
+
     # Use OptimizedScanner directly since it works
     db_path = Path(args.db)
     central_path = Path(args.central)
@@ -137,23 +149,140 @@ def cmd_mark_group(args):
         
     print(f"Marked group {args.group_id} as {args.status} ({cursor.rowcount} files updated)")
 
-def cmd_bulk_mark(args):
-    """Bulk mark files by path pattern."""
+def cmd_bulk_mark(args):  # ← SAME FUNCTION NAME
+    """Enhanced bulk mark with preview mode and regex support."""
+    import re
+    from media_tool.database.manager import DatabaseManager
+    from datetime import datetime
+    
     db_manager = DatabaseManager(Path(args.db))
     
-    if args.status not in ['undecided', 'keep', 'not_needed']:
-        print(f"Invalid status. Use: undecided, keep, not_needed")
-        return
-        
+    # Determine pattern type
+    use_regex = getattr(args, 'regex', False)
+    pattern = args.path_like
+    
+    print(f"🔍 Searching for files with pattern: '{pattern}'")
+    print(f"   Mode: {'Regular Expression' if use_regex else 'SQL LIKE (substring)'}")
+    
     with db_manager.get_connection() as conn:
-        from datetime import datetime
-        timestamp = datetime.now().isoformat() + 'Z'
-        like_pattern = f"%{args.path_like}%"
-        cursor = conn.execute("UPDATE files SET review_status=?, reviewed_at=? WHERE path_on_drive LIKE ?",
-                            (args.status, timestamp, like_pattern))
-        conn.commit()
+        if use_regex:
+            # REGEX MODE: Get all files and filter in Python
+            all_files = conn.execute("""
+                SELECT 
+                    file_id, path_on_drive, size_bytes, width, height, 
+                    review_status, type, group_id
+                FROM files 
+                ORDER BY path_on_drive
+            """).fetchall()
+            
+            # Filter using regex
+            try:
+                regex_pattern = re.compile(pattern, re.IGNORECASE)
+                matching_files = []
+                
+                for file_info in all_files:
+                    path = file_info[1]  # path_on_drive
+                    if regex_pattern.search(path):
+                        matching_files.append(file_info)
+                        if len(matching_files) >= getattr(args, 'limit', 100) + 50:
+                            break
+                            
+            except re.error as e:
+                print(f"❌ Invalid regular expression: {e}")
+                return
+                
+        else:
+            # LIKE MODE: Use SQL LIKE (original behavior)
+            like_pattern = f"%{pattern}%"
+            matching_files = conn.execute("""
+                SELECT 
+                    file_id, path_on_drive, size_bytes, width, height, 
+                    review_status, type, group_id
+                FROM files 
+                WHERE LOWER(path_on_drive) LIKE LOWER(?)
+                ORDER BY path_on_drive
+                LIMIT ?
+            """, (like_pattern, getattr(args, 'limit', 100) + 50)).fetchall()
         
-    print(f"Bulk marked {cursor.rowcount} files matching '{args.path_like}' as {args.status}")
+        total_matches = len(matching_files)
+        display_files = matching_files[:getattr(args, 'limit', 100)]
+        
+        if not matching_files:
+            print(f"❌ No files found matching pattern: '{pattern}'")
+            return
+        
+        # PREVIEW MODE: Show matching files (no status provided)
+        if not args.status:
+            print(f"\n📊 FOUND {total_matches:,} MATCHING FILES")
+            print(f"{'=' * 80}")
+            
+            # Group by current status
+            status_groups = {}
+            for file_info in display_files:
+                status = file_info[5]  # review_status
+                if status not in status_groups:
+                    status_groups[status] = []
+                status_groups[status].append(file_info)
+            
+            print(f"\n📊 BREAKDOWN BY STATUS:")
+            for status, files in status_groups.items():
+                print(f"   {status}: {len(files):,} files")
+            
+            # Show sample files
+            print(f"\n📋 SAMPLE FILES (showing {len(display_files):,} of {total_matches:,}):")
+            print(f"{'ID':<8} {'Status':<12} {'Size':<10} {'Filename'}")
+            print(f"{'-' * 80}")
+            
+            for file_info in display_files:
+                file_id, path, size_bytes, width, height, review_status, file_type, group_id = file_info
+                
+                filename = Path(path).name if not getattr(args, 'show_paths', False) else path
+                size_mb = f"{size_bytes / (1024*1024):.1f}MB" if size_bytes else "0MB"
+                
+                if len(filename) > 50:
+                    filename = filename[:47] + "..."
+                
+                print(f"{file_id:<8} {review_status:<12} {size_mb:<10} {filename}")
+            
+            if total_matches > getattr(args, 'limit', 100):
+                remaining = total_matches - getattr(args, 'limit', 100)
+                print(f"\n   ... and {remaining:,} more files")
+            
+            print(f"\n💡 TO MARK THESE FILES:")
+            regex_flag = " --regex" if use_regex else ""
+            print(f"   Keep:        ./media_tool_cli.py bulk-mark --path-like '{pattern}'{regex_flag} --status keep")
+            print(f"   Not needed:  ./media_tool_cli.py bulk-mark --path-like '{pattern}'{regex_flag} --status not_needed")
+            
+            return
+        
+        # MARK MODE: Actually mark the files
+        print(f"📝 Marking {total_matches:,} files as '{args.status}'...")
+        
+        timestamp = datetime.now().isoformat() + 'Z'
+        
+        if use_regex:
+            # Update by file_id for regex matches
+            file_ids = [str(f[0]) for f in matching_files]
+            if file_ids:
+                placeholders = ','.join(['?' for _ in file_ids])
+                cursor = conn.execute(f"""
+                    UPDATE files 
+                    SET review_status = ?, reviewed_at = ? 
+                    WHERE file_id IN ({placeholders})
+                """, [args.status, timestamp] + file_ids)
+        else:
+            # Update by LIKE pattern
+            like_pattern = f"%{pattern}%"
+            cursor = conn.execute("""
+                UPDATE files 
+                SET review_status = ?, reviewed_at = ? 
+                WHERE LOWER(path_on_drive) LIKE LOWER(?)
+            """, (args.status, timestamp, like_pattern))
+        
+        conn.commit()
+        updated_count = cursor.rowcount
+        
+        print(f"✅ Updated {updated_count:,} files")
 
 def cmd_promote(args):
     """Promote file to be group's original."""
@@ -242,6 +371,63 @@ def cmd_cleanup_checkpoints(args):
         checkpoint_manager.cleanup_old_checkpoints(args.days)
         print(f"Cleaned up checkpoints older than {args.days} days")
 
+def parse_file_size(size_str):
+    """Parse human-readable file size strings."""
+    if not size_str:
+        return 0
+    
+    size_str = size_str.strip().upper()
+    
+    # Size multipliers (binary units)
+    multipliers = {
+        'B': 1,
+        'K': 1024,
+        'KB': 1024,
+        'M': 1024 ** 2,
+        'MB': 1024 ** 2,
+        'G': 1024 ** 3,
+        'GB': 1024 ** 3,
+        'T': 1024 ** 4,
+        'TB': 1024 ** 4,
+    }
+    
+    # Pattern: number + optional unit
+    pattern = r'^(\d+(?:\.\d+)?)\s*([KMGT]?B?)\s*$'
+    match = re.match(pattern, size_str)
+    
+    if not match:
+        raise ValueError(f"Invalid size format: {size_str}. Use formats like '1M', '500K', '2.5G'")
+    
+    number_str, unit = match.groups()
+    number = float(number_str)
+    
+    # Default to bytes if no unit
+    if not unit:
+        unit = 'B'
+    
+    if unit not in multipliers:
+        raise ValueError(f"Unknown unit: {unit}. Use B, K, KB, M, MB, G, GB, T, TB")
+    
+    return int(number * multipliers[unit])
+
+def format_file_size(bytes_value):
+    """Format bytes as human-readable string."""
+    if bytes_value == 0:
+        return "0 B"
+    
+    units = ['B', 'KB', 'MB', 'GB', 'TB']
+    unit_index = 0
+    size = float(bytes_value)
+    
+    while size >= 1024 and unit_index < len(units) - 1:
+        size /= 1024
+        unit_index += 1
+    
+    if size == int(size):
+        return f"{int(size)} {units[unit_index]}"
+    else:
+        return f"{size:.1f} {units[unit_index]}"
+
 def main():
     """Main CLI entry point with complete command support."""
     parser = argparse.ArgumentParser(description="Media Consolidation Tool - Complete CLI")
@@ -262,6 +448,7 @@ def main():
     scan_parser.add_argument("--no-checkpoints", action="store_true", help="Disable checkpoints")
     scan_parser.add_argument("--hash-large", action="store_true", help="Hash large files")
     scan_parser.add_argument("--skip-discovery", action="store_true", help="Skip discovery")
+    scan_parser.add_argument("--min-size", type=str, help="Minimum file size to include. Examples: '1M', '500K', '2.5G'. Files smaller are ignored.")
     
     # STATS command
     stats_parser = subparsers.add_parser("stats", help="Show database statistics")
@@ -284,9 +471,16 @@ def main():
     mark_group_parser.add_argument("--note", help="Optional review note")
     
     # BULK-MARK command
-    bulk_mark_parser = subparsers.add_parser("bulk-mark", help="Bulk mark by path pattern")
-    bulk_mark_parser.add_argument("--path-like", required=True, help="Path substring to match")
-    bulk_mark_parser.add_argument("--status", choices=['undecided', 'keep', 'not_needed'], required=True, help="Review status")
+    bulk_mark_parser = subparsers.add_parser("bulk-mark", help="Bulk mark by path pattern (or preview matches)")
+    bulk_mark_parser.add_argument("--path-like", required=True, help="Path pattern to match")
+    bulk_mark_parser.add_argument("--status", choices=['undecided', 'keep', 'not_needed'], 
+                                 help="Status to apply. If omitted, shows matching files instead.")
+    bulk_mark_parser.add_argument("--regex", action="store_true", 
+                                 help="Treat pattern as regular expression")
+    bulk_mark_parser.add_argument("--limit", type=int, default=100, 
+                                 help="Max matches to show in preview (default: 100)")
+    bulk_mark_parser.add_argument("--show-paths", action="store_true",
+                                 help="Show full paths instead of just filenames")
     
     # PROMOTE command
     promote_parser = subparsers.add_parser("promote", help="Promote file to be group's original")

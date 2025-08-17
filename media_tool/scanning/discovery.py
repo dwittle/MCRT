@@ -142,6 +142,11 @@ class FileDiscovery:
                         if self._is_media_file(entry.name):
                             try:
                                 size = entry.stat().st_size
+                                # SIZE FILTER - Skip files smaller than minimum
+                                min_file_size = 1 * 1024 * 1024  # 1 MB
+                                if min_file_size > 0 and size < min_file_size:
+                                    stats['filtered_small'] = stats.get('filtered_small', 0) + 1
+                                    continue
                                 candidates.append((Path(entry.path), size))
                                 stats['media_files_found'] += 1
                             except OSError:

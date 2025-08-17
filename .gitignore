@@ -212,3 +212,5 @@ tests/test_db.sqlite
 last_candidates.json
 *.db
 .checkpoints/*
+*.db-shm
+*.db-wal
