@@ -149,52 +149,85 @@ def cmd_mark_group(args):
         
     print(f"Marked group {args.group_id} as {args.status} ({cursor.rowcount} files updated)")
 
-def cmd_bulk_mark(args):  # ← SAME FUNCTION NAME
-    """Enhanced bulk mark with preview mode and regex support."""
+def cmd_bulk_mark(args):
+    """Bulk mark with accurate preview messages."""
     import re
     from media_tool.database.manager import DatabaseManager
     from datetime import datetime
+    from pathlib import Path
+    
+    try:
+        from tabulate import tabulate
+    except ImportError:
+        print("❌ tabulate not installed. Install with: pip install tabulate")
+        return
     
     db_manager = DatabaseManager(Path(args.db))
     
-    # Determine pattern type
+    # Pattern matching setup
     use_regex = getattr(args, 'regex', False)
     pattern = args.path_like
+    limit = getattr(args, 'limit', 100)
+    show_paths = getattr(args, 'show_paths', False)
     
-    print(f"🔍 Searching for files with pattern: '{pattern}'")
-    print(f"   Mode: {'Regular Expression' if use_regex else 'SQL LIKE (substring)'}")
+    # Search info
+    search_info = [
+        ["Pattern", f"'{pattern}'"],
+        ["Mode", "Regular Expression" if use_regex else "SQL LIKE (substring)"],
+        ["Preview limit", f"{limit:,} files"],
+        ["Display", "Full paths" if show_paths else "Filenames only"]
+    ]
+    
+    print("🔍 BULK-MARK PATTERN SEARCH")
+    print(tabulate(search_info, tablefmt="plain"))
+    print()
     
     with db_manager.get_connection() as conn:
+        # STEP 1: Get TOTAL count first (most important fix)
         if use_regex:
-            # REGEX MODE: Get all files and filter in Python
+            # For regex, we need to get all files and count matches
             all_files = conn.execute("""
-                SELECT 
-                    file_id, path_on_drive, size_bytes, width, height, 
-                    review_status, type, group_id
+                SELECT file_id, path_on_drive, review_status
                 FROM files 
                 ORDER BY path_on_drive
             """).fetchall()
             
-            # Filter using regex
             try:
                 regex_pattern = re.compile(pattern, re.IGNORECASE)
-                matching_files = []
+                total_matches = 0
+                all_matching_files = []
                 
                 for file_info in all_files:
-                    path = file_info[1]  # path_on_drive
+                    path = file_info[1]
                     if regex_pattern.search(path):
-                        matching_files.append(file_info)
-                        if len(matching_files) >= getattr(args, 'limit', 100) + 50:
-                            break
-                            
+                        total_matches += 1
+                        all_matching_files.append(file_info)
+                        
             except re.error as e:
                 print(f"❌ Invalid regular expression: {e}")
                 return
-                
         else:
-            # LIKE MODE: Use SQL LIKE (original behavior)
+            # For LIKE, get total count efficiently
             like_pattern = f"%{pattern}%"
-            matching_files = conn.execute("""
+            
+            # COUNT QUERY - Get exact total that will be affected
+            total_matches = conn.execute("""
+                SELECT COUNT(*) 
+                FROM files 
+                WHERE LOWER(path_on_drive) LIKE LOWER(?)
+            """, (like_pattern,)).fetchone()[0]
+        
+        if total_matches == 0:
+            print(f"❌ No files found matching pattern: '{pattern}'")
+            return
+        
+        # STEP 2: Get sample for preview (limited query)
+        if use_regex:
+            # Use the matches we already found
+            display_files = all_matching_files[:limit]
+        else:
+            # Get limited sample for display
+            display_files = conn.execute("""
                 SELECT 
                     file_id, path_on_drive, size_bytes, width, height, 
                     review_status, type, group_id
@@ -202,67 +235,157 @@ def cmd_bulk_mark(args):  # ← SAME FUNCTION NAME
                 WHERE LOWER(path_on_drive) LIKE LOWER(?)
                 ORDER BY path_on_drive
                 LIMIT ?
-            """, (like_pattern, getattr(args, 'limit', 100) + 50)).fetchall()
+            """, (like_pattern, limit)).fetchall()
         
-        total_matches = len(matching_files)
-        display_files = matching_files[:getattr(args, 'limit', 100)]
-        
-        if not matching_files:
-            print(f"❌ No files found matching pattern: '{pattern}'")
-            return
-        
-        # PREVIEW MODE: Show matching files (no status provided)
+        # PREVIEW MODE: Show accurate total count
         if not args.status:
-            print(f"\n📊 FOUND {total_matches:,} MATCHING FILES")
-            print(f"{'=' * 80}")
+            print(f"📊 PATTERN MATCHES {total_matches:,} FILES TOTAL")
+            print("=" * 80)
             
-            # Group by current status
-            status_groups = {}
+            # Show status breakdown for ALL matches (not just sample)
+            if use_regex:
+                # Count from our regex matches
+                status_groups = {}
+                for file_info in all_matching_files:
+                    status = file_info[2]  # review_status
+                    status_groups[status] = status_groups.get(status, 0) + 1
+            else:
+                # Get status breakdown for ALL matches
+                status_breakdown = conn.execute("""
+                    SELECT review_status, COUNT(*) 
+                    FROM files 
+                    WHERE LOWER(path_on_drive) LIKE LOWER(?)
+                    GROUP BY review_status
+                """, (like_pattern,)).fetchall()
+                
+                status_groups = dict(status_breakdown)
+            
+            status_data = [[status, f"{count:,}"] for status, count in sorted(status_groups.items())]
+            
+            print("📊 STATUS BREAKDOWN (ALL FILES):")
+            print(tabulate(status_data, headers=["Status", "Files"], tablefmt="plain"))
+            
+            # File sample table
+            table_data = []
             for file_info in display_files:
-                status = file_info[5]  # review_status
-                if status not in status_groups:
-                    status_groups[status] = []
-                status_groups[status].append(file_info)
-            
-            print(f"\n📊 BREAKDOWN BY STATUS:")
-            for status, files in status_groups.items():
-                print(f"   {status}: {len(files):,} files")
-            
-            # Show sample files
-            print(f"\n📋 SAMPLE FILES (showing {len(display_files):,} of {total_matches:,}):")
-            print(f"{'ID':<8} {'Status':<12} {'Size':<10} {'Filename'}")
-            print(f"{'-' * 80}")
-            
-            for file_info in display_files:
-                file_id, path, size_bytes, width, height, review_status, file_type, group_id = file_info
+                if len(file_info) >= 8:
+                    file_id, path, size_bytes, width, height, review_status, file_type, group_id = file_info
+                else:
+                    # Handle different query results
+                    file_id, path = file_info[0], file_info[1]
+                    size_bytes = width = height = file_type = group_id = None
+                    review_status = file_info[2] if len(file_info) > 2 else 'unknown'
                 
-                filename = Path(path).name if not getattr(args, 'show_paths', False) else path
-                size_mb = f"{size_bytes / (1024*1024):.1f}MB" if size_bytes else "0MB"
+                if show_paths:
+                    display_path = path
+                else:
+                    display_path = Path(path).name
                 
-                if len(filename) > 50:
-                    filename = filename[:47] + "..."
+                size_mb = f"{size_bytes / (1024*1024):.1f}" if size_bytes else "0"
+                dimensions = f"{width}×{height}" if (width and height) else "Unknown"
+                group_str = str(group_id) if group_id else "-"
                 
-                print(f"{file_id:<8} {review_status:<12} {size_mb:<10} {filename}")
+                table_data.append([
+                    file_id,
+                    review_status,
+                    f"{size_mb} MB",
+                    dimensions,
+                    group_str,
+                    display_path
+                ])
             
-            if total_matches > getattr(args, 'limit', 100):
-                remaining = total_matches - getattr(args, 'limit', 100)
-                print(f"\n   ... and {remaining:,} more files")
+            headers = ["ID", "Status", "Size", "Dimensions", "Group", 
+                      "Full Path" if show_paths else "Filename"]
             
-            print(f"\n💡 TO MARK THESE FILES:")
+            print(f"\n📋 SAMPLE FILES (showing {len(display_files):,} of {total_matches:,} total):")
+            print(tabulate(table_data, headers=headers, tablefmt="plain", maxcolwidths=None, stralign="left"))
+            
+            # CLEAR WARNING about total impact
+            if total_matches > limit:
+                print(f"\n⚠️  IMPORTANT: This preview shows only {limit:,} files")
+                print(f"   BUT THE PATTERN MATCHES {total_matches:,} FILES TOTAL")
+                print(f"   All {total_matches:,} files will be affected when you apply a status")
+            
+            # Action suggestions with accurate counts
+            print(f"\n💡 ACTIONS (will affect ALL {total_matches:,} matching files):")
             regex_flag = " --regex" if use_regex else ""
-            print(f"   Keep:        ./media_tool_cli.py bulk-mark --path-like '{pattern}'{regex_flag} --status keep")
-            print(f"   Not needed:  ./media_tool_cli.py bulk-mark --path-like '{pattern}'{regex_flag} --status not_needed")
+            
+            action_data = [
+                ["Keep all", f"./media_tool_cli.py bulk-mark --path-like '{pattern}'{regex_flag} --status keep"],
+                ["Mark not needed", f"./media_tool_cli.py bulk-mark --path-like '{pattern}'{regex_flag} --status not_needed"],
+                ["Reset to undecided", f"./media_tool_cli.py bulk-mark --path-like '{pattern}'{regex_flag} --status undecided"]
+            ]
+            
+            print(tabulate(action_data, headers=["Action", f"Command (affects {total_matches:,} files)"], tablefmt="plain"))
+            
+            # Impact summary with accurate totals
+            if not use_regex:
+                # Get total size for all matches
+                total_size_result = conn.execute("""
+                    SELECT SUM(size_bytes) 
+                    FROM files 
+                    WHERE LOWER(path_on_drive) LIKE LOWER(?)
+                """, (like_pattern,)).fetchone()[0]
+            else:
+                total_size_result = sum(f[2] or 0 for f in all_matching_files)
+            
+            impact_data = [
+                ["Total files", f"{total_matches:,}"],
+                ["Total size", f"{(total_size_result or 0) / (1024**3):.2f} GB"],
+                ["Sample shown", f"{len(display_files):,}"]
+            ]
+            
+            print(f"\n📈 IMPACT SUMMARY:")
+            print(tabulate(impact_data, tablefmt="plain"))
             
             return
         
-        # MARK MODE: Actually mark the files
-        print(f"📝 Marking {total_matches:,} files as '{args.status}'...")
+        # MARK MODE: Show accurate counts before marking
+        print(f"📝 BULK MARKING ANALYSIS")
         
+        # Get accurate status change counts
+        if use_regex:
+            status_changes = {}
+            for file_info in all_matching_files:
+                current_status = file_info[2]  # review_status
+                if current_status != args.status:
+                    status_changes[current_status] = status_changes.get(current_status, 0) + 1
+        else:
+            # Get status changes for all matches
+            status_change_data = conn.execute("""
+                SELECT review_status, COUNT(*) 
+                FROM files 
+                WHERE LOWER(path_on_drive) LIKE LOWER(?)
+                AND review_status != ?
+                GROUP BY review_status
+            """, (like_pattern, args.status)).fetchall()
+            
+            status_changes = dict(status_change_data)
+        
+        if status_changes:
+            change_data = [[old_status, args.status, f"{count:,}"] 
+                          for old_status, count in status_changes.items()]
+            
+            print("STATUS CHANGES (ALL MATCHING FILES):")
+            print(tabulate(change_data, headers=["From", "To", "Files"], tablefmt="plain"))
+            
+            total_changes = sum(status_changes.values())
+            unchanged = total_matches - total_changes
+            
+            print(f"\nSUMMARY:")
+            print(f"   Will change: {total_changes:,} files")
+            print(f"   Already correct: {unchanged:,} files")
+            print(f"   Total affected: {total_matches:,} files")
+        else:
+            print(f"   All {total_matches:,} files already marked as '{args.status}'")
+            print("   No changes needed")
+            return
+        
+        # Perform the update
         timestamp = datetime.now().isoformat() + 'Z'
         
         if use_regex:
-            # Update by file_id for regex matches
-            file_ids = [str(f[0]) for f in matching_files]
+            file_ids = [str(f[0]) for f in all_matching_files]
             if file_ids:
                 placeholders = ','.join(['?' for _ in file_ids])
                 cursor = conn.execute(f"""
@@ -271,8 +394,6 @@ def cmd_bulk_mark(args):  # ← SAME FUNCTION NAME
                     WHERE file_id IN ({placeholders})
                 """, [args.status, timestamp] + file_ids)
         else:
-            # Update by LIKE pattern
-            like_pattern = f"%{pattern}%"
             cursor = conn.execute("""
                 UPDATE files 
                 SET review_status = ?, reviewed_at = ? 
@@ -282,7 +403,21 @@ def cmd_bulk_mark(args):  # ← SAME FUNCTION NAME
         conn.commit()
         updated_count = cursor.rowcount
         
-        print(f"✅ Updated {updated_count:,} files")
+        # Show accurate completion message
+        result_data = [
+            ["Pattern", f"'{pattern}'"],
+            ["New status", args.status],
+            ["Files updated", f"{updated_count:,}"],
+            ["Total matches", f"{total_matches:,}"]
+        ]
+        
+        print(f"\n✅ BULK MARK COMPLETED:")
+        print(tabulate(result_data, tablefmt="plain"))
+        
+        # Verify the counts match
+        if updated_count != total_matches:
+            print(f"\n📝 Note: {total_matches - updated_count:,} files were already marked as '{args.status}'")
+
 
 def cmd_promote(args):
     """Promote file to be group's original."""
