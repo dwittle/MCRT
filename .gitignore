@@ -208,3 +208,4 @@ __marimo__/
 
 
 tests/generated/*
+tests/test_db.sqlite
