@@ -976,12 +976,16 @@ def cmd_export_backup_list(args):
     """Export backup list with optional JSON metadata."""
     db_manager = DatabaseManager(Path(args.db))
     
-    print(f"Exporting backup manifest to {args.out}...")
+    # Only show progress messages if not in JSON mode
+    if not args.json:
+        print(f"Exporting backup manifest to {args.out}...")
     
     status_filter = "IN ('keep','undecided')" if args.include_undecided else "= 'keep'"
     
     with db_manager.get_connection() as conn:
-        print("  - Querying originals...", end="", flush=True)
+        if not args.json:
+            print("  - Querying originals...", end="", flush=True)
+            
         rows = conn.execute(f"""
             SELECT g.group_id, f.file_id, f.path_on_drive, f.width, f.height, 
                    f.size_bytes, f.hash_sha256, f.review_status
@@ -991,9 +995,13 @@ def cmd_export_backup_list(args):
             AND ((? = 1) OR (f.is_large = 0))
             ORDER BY g.group_id
         """, (1 if args.include_large else 0,)).fetchall()
-        print(f" {len(rows):,} records")
+        
+        if not args.json:
+            print(f" {len(rows):,} records")
     
-    print("  - Writing CSV...", end="", flush=True)
+    if not args.json:
+        print("  - Writing CSV...", end="", flush=True)
+        
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     
     import csv
@@ -1002,7 +1010,9 @@ def cmd_export_backup_list(args):
         writer.writerow(["group_id", "original_file_id", "path", 
                         "width", "height", "size_bytes", "hash_sha256", "review_status"])
         writer.writerows(rows)
-    print(" ✓")
+    
+    if not args.json:
+        print(" ✓")
     
     # Calculate totals
     total_size = sum(row[5] or 0 for row in rows)
