@@ -3,99 +3,160 @@
 
 """
 Scan command implementation for the Media Consolidation Tool.
+- Uses process-based feature extraction (SHA-256, pHash -> hex TEXT) + single SQLite writer
+- Supports checkpointing flow you already have
+- Groups exact & near-duplicates (Hamming on parsed pHash)
 """
 
 import json
 import os
 import sqlite3
-import time
-from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Optional, Tuple, Set
+from typing import List, Optional, Tuple
 
 from ..config import SUPPORTED_EXT, IMAGE_EXT, VIDEO_EXT, LARGE_FILE_BYTES
 from ..database.manager import DatabaseManager
 from ..checkpoint.manager import CheckpointManager
 from ..models.checkpoint import ScanCheckpoint
-from ..models.file_record import FileRecord
-from ..scanning.detector import DuplicateDetector
-from ..scanning.extractor import FeatureExtractor
+from types import SimpleNamespace
 from ..storage.drive import DriveManager
 from ..utils.path import ensure_dir
 from ..utils.time import utc_now_str
 
+# New pipeline / writer / grouping (ensure these modules exist in your tree)
+from ..scanning.pipeline import run_scan_pipeline
+from ..writer import SQLiteWriter
+from ..grouping import group_duplicates
+
 
 class ScanCommand:
     """Main scanner with pipeline architecture and checkpoint support."""
-    
+
     def __init__(self, db_path: Path, central_path: Path):
         self.db_manager = DatabaseManager(db_path)
+        self.db_path = Path(db_path)
         self.central_path = central_path
-        self.duplicate_detector = DuplicateDetector(self.db_manager)
         self.checkpoint_manager = CheckpointManager(self.db_manager)
+        self.drive_manager = DriveManager()
         ensure_dir(central_path)
-    
-    def execute(self, source: Path, wsl_mode: bool = False, 
-               drive_label: Optional[str] = None, drive_id_hint: Optional[str] = None,
-               hash_large: bool = False, workers: int = 6, io_workers: int = 2,
-               phash_threshold: int = 5, skip_discovery: bool = False,
-               max_phash_pixels: int = 24_000_000, chunk_size: int = 100,
-               resume_scan_id: Optional[str] = None, auto_checkpoint: bool = True):
+
+    # --------------------------------------------------------------------- #
+    # Entry point
+    # --------------------------------------------------------------------- #
+    def execute(
+        self,
+        source: Path,
+        wsl_mode: bool = False,
+        drive_label: Optional[str] = None,
+        drive_id_hint: Optional[str] = None,
+        hash_large: bool = False,
+        workers: int = 6,
+        io_workers: int = 2,
+        phash_threshold: int = 5,
+        skip_discovery: bool = False,
+        max_phash_pixels: int = 24_000_000,
+        chunk_size: int = 100,
+        resume_scan_id: Optional[str] = None,
+        auto_checkpoint: bool = True,
+    ):
         """Execute optimized scanning with checkpoint support."""
-        
-        # Configuration for checkpoints
+
         scan_config = {
-            'wsl_mode': wsl_mode,
-            'drive_label': drive_label,
-            'drive_id_hint': drive_id_hint,
-            'hash_large': hash_large,
-            'workers': workers,
-            'io_workers': io_workers,
-            'phash_threshold': phash_threshold,
-            'max_phash_pixels': max_phash_pixels,
-            'chunk_size': chunk_size
+            "wsl_mode": wsl_mode,
+            "drive_label": drive_label,
+            "drive_id_hint": drive_id_hint,
+            "hash_large": hash_large,
+            "workers": workers,
+            "io_workers": io_workers,
+            "phash_threshold": phash_threshold,
+            "max_phash_pixels": max_phash_pixels,
+            "chunk_size": chunk_size,
+            "source_path": str(source),
         }
-        
-        self._print_scan_header(source, workers, io_workers, phash_threshold, 
-                               hash_large, max_phash_pixels, chunk_size, auto_checkpoint)
-        
-        # Clean up old checkpoints
+
+        self._print_scan_header(
+            source, workers, io_workers, phash_threshold, hash_large, max_phash_pixels, chunk_size, auto_checkpoint
+        )
+
         if auto_checkpoint:
             self.checkpoint_manager.cleanup_old_checkpoints()
-        
-        # Handle resume logic
+
         checkpoint = self._handle_resume(resume_scan_id, source)
-        
-        # Get or create drive
+
+        # Drive
         drive_id = self._get_drive_id(source, wsl_mode, drive_label, drive_id_hint, checkpoint)
-        
-        # Generate scan ID if starting new scan
+
+        # Scan id
         scan_id = checkpoint.scan_id if checkpoint else self.checkpoint_manager.generate_scan_id(str(source))
-        
+
         try:
-            # Execute scan pipeline
-            self._execute_scan_pipeline(
-                source, drive_id, scan_id, scan_config, checkpoint, 
-                skip_discovery, auto_checkpoint, hash_large, io_workers, 
-                max_phash_pixels, chunk_size, phash_threshold
+            # -------------------------- Stage 1: Discovery --------------------------
+            candidates = self._discovery_stage(
+                source, skip_discovery, scan_id, drive_id, scan_config, auto_checkpoint, checkpoint
             )
-            
+            if not candidates:
+                print("No media files found.")
+                return
+
+            # -------------------------- Stage 2: Extraction -------------------------
+            # Uses process pool + single writer. Stores:
+            #   hash_sha256 (TEXT), phash (TEXT hex or NULL), width, height, size_bytes,
+            #   type, drive_id, path_on_drive, is_large, copied, duplicate_of, group_id, central_path, fast_fp
+            records = self._extraction_stage(
+                candidates,
+                drive_id,
+                hash_large,
+                io_workers,
+                max_phash_pixels,
+                chunk_size,
+                scan_id,
+                scan_config,
+                auto_checkpoint,
+                checkpoint,
+            )
+
+            # -------------------------- Stage 3: Grouping ---------------------------
+            self._grouping_stage(records, phash_threshold, scan_id, scan_config, auto_checkpoint, checkpoint)
+
+            # Completed
+            if auto_checkpoint:
+                completed_checkpoint = ScanCheckpoint(
+                    scan_id=scan_id,
+                    source_path=str(source),
+                    drive_id=drive_id,
+                    stage="completed",
+                    timestamp=utc_now_str(),
+                    processed_count=len(records) if records else 0,
+                    config=scan_config,
+                )
+                self.checkpoint_manager.save_checkpoint(completed_checkpoint)
+                print(f"  ✅ Scan marked as completed (ID: {scan_id})")
+
+            self._print_final_stats()
+
         except KeyboardInterrupt:
             if auto_checkpoint:
                 print(f"\n⚠️  Scan interrupted! Resume with: --resume-scan-id {scan_id}")
             raise
-        except Exception as e:
+        except Exception:
             if auto_checkpoint:
                 print(f"\n❌ Scan failed! Resume with: --resume-scan-id {scan_id}")
             raise
-        
-        self._print_scan_footer()
-    
-    def _print_scan_header(self, source: Path, workers: int, io_workers: int, 
-                          phash_threshold: int, hash_large: bool, max_phash_pixels: int,
-                          chunk_size: int, auto_checkpoint: bool):
-        """Print scan configuration header."""
+
+    # --------------------------------------------------------------------- #
+    # Printing
+    # --------------------------------------------------------------------- #
+    def _print_scan_header(
+        self,
+        source: Path,
+        workers: int,
+        io_workers: int,
+        phash_threshold: int,
+        hash_large: bool,
+        max_phash_pixels: int,
+        chunk_size: int,
+        auto_checkpoint: bool,
+    ):
         print("=" * 80)
         print(f"MEDIA TOOL OPTIMIZED SCAN - {utc_now_str()}")
         print("=" * 80)
@@ -108,174 +169,236 @@ class ScanCommand:
         print(f"Chunk size: {chunk_size}")
         print(f"Checkpoints: {'Enabled' if auto_checkpoint else 'Disabled'}")
         print()
-    
-    def _print_scan_footer(self):
-        """Print scan completion footer."""
+
+    def _print_final_stats(self):
+        with sqlite3.connect(self.db_path) as conn:
+            total = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            grouped = conn.execute("SELECT COUNT(*) FROM files WHERE group_id IS NOT NULL").fetchone()[0]
+            exact = conn.execute("SELECT COUNT(*) FROM files WHERE duplicate_of IS NOT NULL").fetchone()[0]
         print("=" * 80)
         print(f"SCAN COMPLETED - {utc_now_str()}")
+        print(f"Files in DB: {total:,}")
+        print(f"In groups:  {grouped:,}")
+        print(f"Duplicates: {exact:,}")
         print("=" * 80)
-    
+
+    # --------------------------------------------------------------------- #
+    # Resume / Drive
+    # --------------------------------------------------------------------- #
     def _handle_resume(self, resume_scan_id: Optional[str], source: Path) -> Optional[ScanCheckpoint]:
-        """Handle scan resume logic."""
         if not resume_scan_id:
             return None
-            
         checkpoint = self.checkpoint_manager.load_checkpoint(resume_scan_id)
         if not checkpoint:
             print(f"❌ Could not load checkpoint {resume_scan_id}")
             return None
-            
         print(f"📋 Resuming scan from checkpoint: {checkpoint.stage} stage")
         print(f"    - Processed: {checkpoint.processed_count:,} items")
         print(f"    - Timestamp: {checkpoint.timestamp}")
-        
-        # Validate checkpoint matches current parameters
         if checkpoint.source_path != str(source):
             print(f"❌ Source path mismatch: checkpoint={checkpoint.source_path}, current={source}")
             return None
-            
         return checkpoint
-    
-    def _get_drive_id(self, source: Path, wsl_mode: bool, drive_label: Optional[str],
-                     drive_id_hint: Optional[str], checkpoint: Optional[ScanCheckpoint]) -> int:
-        """Get or create drive ID."""
+
+    def _get_drive_id(
+        self,
+        source: Path,
+        wsl_mode: bool,
+        drive_label: Optional[str],
+        drive_id_hint: Optional[str],
+        checkpoint: Optional[ScanCheckpoint],
+    ) -> int:
         if checkpoint and checkpoint.drive_id:
             print(f"[{utc_now_str()}] Using cached drive ID: {checkpoint.drive_id}")
             return checkpoint.drive_id
-        
+
         print(f"[{utc_now_str()}] Identifying drive...")
-        return self._get_or_create_drive(source, wsl_mode, drive_label, drive_id_hint)
-    
-    def _execute_scan_pipeline(self, source: Path, drive_id: int, scan_id: str,
-                              scan_config: dict, checkpoint: Optional[ScanCheckpoint],
-                              skip_discovery: bool, auto_checkpoint: bool, hash_large: bool,
-                              io_workers: int, max_phash_pixels: int, chunk_size: int,
-                              phash_threshold: int):
-        """Execute the main scan pipeline."""
-        # Stage 1: Discovery
-        candidates = self._discovery_stage(
-            source, skip_discovery, scan_id, drive_id, scan_config, 
-            auto_checkpoint, checkpoint
-        )
-        
-        if not candidates:
-            print("No media files found.")
-            return
-        
-        # Stage 2: Feature extraction
-        records = self._extraction_stage(
-            candidates, drive_id, hash_large, io_workers, max_phash_pixels,
-            chunk_size, scan_id, scan_config, auto_checkpoint, checkpoint
-        )
-        
-        # Stage 3: Duplicate detection and grouping
-        self._grouping_stage(
-            records, phash_threshold, scan_id, scan_config, 
-            auto_checkpoint, checkpoint
-        )
-        
-        # Mark scan as completed
+        dm = self.drive_manager
+        src = str(source)
+
+        # Try common DriveManager APIs
+        for name in ("get_or_create_drive_id", "get_or_create_drive", "ensure_drive_id", "ensure_drive"):
+            if hasattr(dm, name):
+                fn = getattr(dm, name)
+                try:
+                    res = fn(source_path=src, wsl_mode=wsl_mode, drive_label=drive_label, drive_id_hint=drive_id_hint)
+                except TypeError:
+                    try:
+                        res = fn(src)
+                    except TypeError:
+                        continue
+                # normalize return → int id
+                if isinstance(res, int):
+                    return res
+                if isinstance(res, dict) and "drive_id" in res:
+                    return int(res["drive_id"])
+                if hasattr(res, "drive_id"):
+                    return int(res.drive_id)
+
+        # Fallback: query/insert directly (adjust column names if your schema differs)
+        with sqlite3.connect(self.db_path) as conn:
+            if drive_id_hint:
+                row = conn.execute("SELECT drive_id FROM drives WHERE drive_id = ?", (drive_id_hint,)).fetchone()
+                if row:
+                    return int(row[0])
+            if drive_label:
+                row = conn.execute("SELECT drive_id FROM drives WHERE label = ?", (drive_label,)).fetchone()
+                if row:
+                    return int(row[0])
+            cur = conn.execute(
+                "INSERT INTO drives (label, root_path, created_at) VALUES (?, ?, datetime('now'))",
+                (drive_label or "unknown", src),
+            )
+            return int(cur.lastrowid)
+
+
+    # --------------------------------------------------------------------- #
+    # Pipeline stages
+    # --------------------------------------------------------------------- #
+    def _discovery_stage(
+        self,
+        source: Path,
+        skip_discovery: bool,
+        scan_id: str,
+        drive_id: int,
+        config: dict,
+        auto_checkpoint: bool,
+        checkpoint: Optional[ScanCheckpoint],
+    ) -> List[Tuple[Path, int]]:
+        if checkpoint and checkpoint.stage in ["extraction", "grouping", "completed"]:
+            print(f"[{utc_now_str()}] Loading cached discovered files...")
+            return [(Path(p), s) for p, s in (checkpoint.discovered_files or [])]
+
+        if skip_discovery:
+            print(f"[{utc_now_str()}] Skipping discovery; loading candidates from last_candidates.json ...")
+            try:
+                with open("last_candidates.json", "r", encoding="utf-8") as f:
+                    items = json.load(f)
+                candidates = [(Path(p), int(s)) for p, s in items]
+                print(f"  - Loaded {len(candidates):,} candidates.")
+                return candidates
+            except Exception:
+                print("  - No last_candidates.json; running discovery instead.")
+
+        exts = set(SUPPORTED_EXT or (IMAGE_EXT + VIDEO_EXT))
+        candidates: List[Tuple[Path, int]] = []
+        for root, _, files in os.walk(source, followlinks=False):
+            for name in files:
+                p = Path(root) / name
+                try:
+                    if p.suffix.lower() not in exts:
+                        continue
+                    st = p.stat()
+                    if not st.st_size:
+                        continue
+                    candidates.append((p, st.st_size))
+                except OSError:
+                    continue
+
+        print(f"[{utc_now_str()}] Discovered {len(candidates):,} candidate files.")
+
         if auto_checkpoint:
-            completed_checkpoint = ScanCheckpoint(
+            cp = ScanCheckpoint(
                 scan_id=scan_id,
                 source_path=str(source),
                 drive_id=drive_id,
-                stage='completed',
+                stage="extraction",
                 timestamp=utc_now_str(),
-                processed_count=len(records) if records else 0,
-                config=scan_config
+                processed_count=len(candidates),
+                config=config,
+                discovered_files=[(str(p), s) for p, s in candidates],
             )
-            self.checkpoint_manager.save_checkpoint(completed_checkpoint)
-            print(f"  ✅ Scan marked as completed (ID: {scan_id})")
-        
-        # Final statistics
-        self._print_final_stats()
-    
-    def _discovery_stage(self, source: Path, skip_discovery: bool, scan_id: str,
-                        drive_id: int, config: dict, auto_checkpoint: bool,
-                        checkpoint: Optional[ScanCheckpoint]) -> List[Tuple[Path, int]]:
-        """Execute file discovery stage."""
-        if checkpoint and checkpoint.stage in ['extraction', 'grouping', 'completed']:
-            print(f"[{utc_now_str()}] Loading cached discovered files...")
-            candidates = [(Path(p), s) for p, s in checkpoint.discovered_files]
-            print(f"  - Loaded {len(candidates):,} files from checkpoint")
-            return candidates
-        
-        # Implementation continues with existing discovery logic...
-        return self._discover_files_with_checkpoint(
-            source, skip_discovery, scan_id, drive_id, config, auto_checkpoint
-        )
-    
-    def _extraction_stage(self, candidates: List[Tuple[Path, int]], drive_id: int,
-                         hash_large: bool, io_workers: int, max_phash_pixels: int,
-                         chunk_size: int, scan_id: str, config: dict, 
-                         auto_checkpoint: bool, checkpoint: Optional[ScanCheckpoint]) -> List[FileRecord]:
-        """Execute feature extraction stage."""
-        if checkpoint and checkpoint.stage in ['grouping', 'completed']:
+            self.checkpoint_manager.save_checkpoint(cp)
+            with open("last_candidates.json", "w", encoding="utf-8") as f:
+                json.dump(cp.discovered_files, f)
+
+        return candidates
+
+    def _extraction_stage(
+        self,
+        candidates: List[Tuple[Path, int]],
+        drive_id: int,
+        hash_large: bool,
+        io_workers: int,
+        max_phash_pixels: int,
+        chunk_size: int,
+        scan_id: str,
+        config: dict,
+        auto_checkpoint: bool,
+        checkpoint: Optional[ScanCheckpoint],
+    ) -> List[SimpleNamespace]:
+        if checkpoint and checkpoint.stage in ["grouping", "completed"]:
             print(f"[{utc_now_str()}] Skipping feature extraction (already completed)")
             return self._load_records_from_db(drive_id)
-        
-        start_batch = checkpoint.batch_number if checkpoint and checkpoint.stage == 'extraction' else 0
-        return self._extract_features_with_checkpoint(
-            candidates, drive_id, hash_large, io_workers, max_phash_pixels,
-            chunk_size, scan_id, config, auto_checkpoint, start_batch
-        )
-    
-    def _grouping_stage(self, records: List[FileRecord], phash_threshold: int,
-                       scan_id: str, config: dict, auto_checkpoint: bool,
-                       checkpoint: Optional[ScanCheckpoint]):
-        """Execute duplicate detection and grouping stage."""
-        if checkpoint and checkpoint.stage == 'completed':
+
+        # Use the process-based pipeline; it will walk config["source_path"].
+        writer = SQLiteWriter(str(self.db_path))
+        try:
+            run_scan_pipeline(
+                root=config["source_path"],
+                writer=writer,
+                drive_id=drive_id,
+                large_file_bytes=LARGE_FILE_BYTES,
+                max_phash_pixels=max_phash_pixels,
+                io_workers=io_workers,
+                cpu_workers=None,      # defaults to os.cpu_count()
+                filetype="image",
+            )
+        finally:
+            writer.close()
+
+        if auto_checkpoint:
+            cp = ScanCheckpoint(
+                scan_id=scan_id,
+                source_path=config["source_path"],
+                drive_id=drive_id,
+                stage="grouping",
+                timestamp=utc_now_str(),
+                processed_count=0,
+                config=config,
+            )
+            self.checkpoint_manager.save_checkpoint(cp)
+
+        return self._load_records_from_db(drive_id)
+
+    def _grouping_stage(
+        self,
+        records: List[SimpleNamespace],
+        phash_threshold: int,
+        scan_id: str,
+        config: dict,
+        auto_checkpoint: bool,
+        checkpoint: Optional[ScanCheckpoint],
+    ):
+        if checkpoint and checkpoint.stage == "completed":
             print(f"[{utc_now_str()}] Skipping grouping (scan already completed)")
             return
-        
+
         if auto_checkpoint:
-            checkpoint = ScanCheckpoint(
+            cp = ScanCheckpoint(
                 scan_id=scan_id,
-                source_path=config.get('source_path', ''),
+                source_path=config["source_path"],
                 drive_id=records[0].drive_id if records else 0,
-                stage='grouping',
+                stage="grouping",
                 timestamp=utc_now_str(),
                 processed_count=len(records),
-                config=config
+                config=config,
             )
-            self.checkpoint_manager.save_checkpoint(checkpoint)
-        
-        self._process_duplicates_and_groups(records, phash_threshold)
-    
-    def _get_or_create_drive(self, source: Path, wsl_mode: bool,
-                           drive_label: Optional[str], drive_id_hint: Optional[str]) -> int:
-        """Get or create drive record."""
-        # Implementation from original code
-        pass  # Placeholder - implement existing logic
-    
-    def _discover_files_with_checkpoint(self, source: Path, skip_discovery: bool,
-                                      scan_id: str, drive_id: int, config: dict,
-                                      auto_checkpoint: bool) -> List[Tuple[Path, int]]:
-        """Discovery with checkpoint support."""
-        # Implementation from original code
-        pass  # Placeholder - implement existing logic
-    
-    def _extract_features_with_checkpoint(self, candidates: List[Tuple[Path, int]],
-                                        drive_id: int, hash_large: bool, io_workers: int,
-                                        max_phash_pixels: int, chunk_size: int,
-                                        scan_id: str, config: dict, auto_checkpoint: bool,
-                                        start_batch: int) -> List[FileRecord]:
-        """Feature extraction with checkpoint support."""
-        # Implementation from original code  
-        pass  # Placeholder - implement existing logic
-    
-    def _load_records_from_db(self, drive_id: int) -> List[FileRecord]:
-        """Load FileRecord objects from database for resuming."""
-        # Implementation from original code
-        pass  # Placeholder - implement existing logic
-    
-    def _process_duplicates_and_groups(self, records: List[FileRecord], phash_threshold: int):
-        """Process records for duplicates and create groups."""
-        # Implementation from original code
-        pass  # Placeholder - implement existing logic
-    
-    def _print_final_stats(self):
-        """Print final scan statistics."""
-        # Implementation from original code
-        pass  # Placeholder - implement existing logic
+            self.checkpoint_manager.save_checkpoint(cp)
+
+        # Run grouping directly in SQL (works with phash TEXT; grouping parses it to int)
+        with sqlite3.connect(self.db_path) as conn:
+            group_duplicates(conn, phash_threshold=phash_threshold)
+
+    # --------------------------------------------------------------------- #
+    # Helpers
+    # --------------------------------------------------------------------- #
+    def _load_records_from_db(self, drive_id: int) -> List[SimpleNamespace]:
+        """Load minimal records (no dependency on FileRecord signature)."""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT file_id, drive_id FROM files WHERE drive_id = ?",
+                (drive_id,),
+            ).fetchall()
+        # simple objects with .file_id and .drive_id so other code keeps working
+        return [SimpleNamespace(file_id=r[0], drive_id=r[1]) for r in rows]

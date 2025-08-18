@@ -215,3 +215,6 @@ last_candidates.json
 *.db-shm
 *.db-wal
 *.csv
+mcrt_patch/*
+*.jpg
+scripts/ignore/*

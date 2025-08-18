@@ -1,69 +1,27 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-Database manager for the Media Consolidation Tool.
-"""
-
+# media_tool/database/manager.py
 import sqlite3
-import contextlib
 from pathlib import Path
-from typing import List
-
-from ..models.file_record import FileRecord
-from .schema import MAIN_SCHEMA, CHECKPOINT_SCHEMA
-
+from .init import init_db_if_needed
+from importlib.resources import files as ir_files  # stdlib, Python 3.9+
 
 class DatabaseManager:
     """Manages SQLite database connections and operations."""
-    
+
     def __init__(self, db_path: Path):
-        self.db_path = db_path
-        self._init_schema()
-    
-    @contextlib.contextmanager
+        self.db_path = Path(db_path)
+        init_db_if_needed(self.db_path)
+        self.conn = sqlite3.connect(str(self.db_path))
+        # Pragmas for performance & integrity
+        self.conn.execute("PRAGMA foreign_keys=ON;")
+        self.conn.execute("PRAGMA journal_mode=WAL;")
+        self.conn.execute("PRAGMA synchronous=NORMAL;")
+
     def get_connection(self):
-        """Get a database connection with proper cleanup."""
-        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+        """Backward-compatible accessor used throughout the codebase."""
+        return self.conn
+
+    def close(self) -> None:
         try:
-            yield conn
-        finally:
-            conn.close()
-    
-    def _init_schema(self):
-        """Initialize database schema if needed."""
-        with self.get_connection() as conn:
-            conn.executescript(MAIN_SCHEMA)
-            conn.executescript(CHECKPOINT_SCHEMA)
-            conn.commit()
-    
-    def batch_insert_files(self, records: List[FileRecord], batch_size: int = 1000):
-        """Efficiently insert multiple file records."""
-        print(f"  - Batch inserting {len(records):,} records...", end="", flush=True)
-        
-        with self.get_connection() as conn:
-            rows = []
-            for rec in records:
-                rows.append((
-                    rec.sha256, rec.phash, rec.width, rec.height, rec.size_bytes,
-                    rec.file_type, rec.drive_id, rec.path, int(rec.is_large),
-                    0, None, None, None, rec.fast_fp
-                ))
-            
-            # Process in batches
-            inserted = 0
-            for i in range(0, len(rows), batch_size):
-                batch = rows[i:i + batch_size]
-                conn.executemany("""
-                    INSERT OR IGNORE INTO files
-                    (hash_sha256, phash, width, height, size_bytes, type, drive_id, 
-                     path_on_drive, is_large, copied, duplicate_of, group_id, central_path, fast_fp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, batch)
-                inserted += len(batch)
-                if i + batch_size < len(rows):
-                    print(f"\r  - Batch inserting {inserted:,}/{len(rows):,} records...", 
-                          end="", flush=True)
-                    
-            conn.commit()
-            print(f"\r  - Inserted {inserted:,} records ✓")
+            self.conn.close()
+        except Exception:
+            pass

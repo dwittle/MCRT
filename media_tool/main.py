@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import REVIEW_STATUSES, DEFAULT_PHASH_THRESHOLD, LARGE_FILE_BYTES
 from .database.manager import DatabaseManager
+from .database.init import init_db_if_needed
 from .commands.scan import ScanCommand
 from .commands.checkpoint import cmd_list_checkpoints, cmd_cleanup_checkpoints, cmd_checkpoint_info
 from .commands.review import (
@@ -191,6 +192,7 @@ def main():
     
     # Initialize database manager
     db_path = Path(args.db)
+    init_db_if_needed(db_path)
     db_manager = DatabaseManager(db_path)
     
     try:
