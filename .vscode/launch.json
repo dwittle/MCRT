@@ -1,0 +1,20 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "media-tool (module)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "media_tool",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "--verbose",
+        "scan",
+        "--source", "tests/generated/",
+        "--central", "./data",
+        "--workers", "4"
+      ]
+    }
+  ]
+}

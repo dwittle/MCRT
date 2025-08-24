@@ -25,7 +25,7 @@ CREATE TABLE drives (
   -- New columns used by fast, no-probe drive identification
   fingerprint TEXT,          -- stable ID: by-id name, PARTUUID, WWID, maj:min, or mount point
   model       TEXT,
-  serial      TEXT,
+  serial_or_uuid      TEXT,
   wwid        TEXT,
   partuuid    TEXT,
   device      TEXT,          -- e.g., /dev/sdd2 (may be empty on WSL physical mounts)

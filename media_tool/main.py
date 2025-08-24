@@ -7,6 +7,7 @@ Main CLI entry point for the Media Consolidation & Review Tool.
 
 import argparse
 import sys
+import logging
 from pathlib import Path
 
 from .config import REVIEW_STATUSES, DEFAULT_PHASH_THRESHOLD, LARGE_FILE_BYTES
@@ -21,13 +22,23 @@ from .commands.review import (
 from .commands.stats import cmd_show_stats
 
 
+def setup_logging(verbose: bool):
+    """Configure logging for the CLI tool."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+    logging.debug("Verbose logging enabled (DEBUG level).")
+
+
 def create_parser():
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
         description="Media Consolidation & Review Tool - Enhanced with Checkpoint Support",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
+        epilog="""Examples:
   # Scan a drive with checkpoint support
   %(prog)s scan --source /mnt/photos --central ./data --workers 4
   
@@ -50,23 +61,15 @@ Examples:
     parser.add_argument("--db", default="media_index.db", 
                        help="SQLite database path (default: media_index.db)")
     parser.add_argument("--verbose", "-v", action="store_true",
-                       help="Enable verbose output")
+                       help="Enable verbose (DEBUG) output")
     
     subparsers = parser.add_subparsers(dest="command", required=True, help="Available commands")
     
-    # SCAN command
+    # Add subcommands
     _add_scan_parser(subparsers)
-    
-    # CHECKPOINT commands
     _add_checkpoint_parsers(subparsers)
-    
-    # CORRECTION commands
     _add_correction_parsers(subparsers)
-    
-    # REVIEW commands
     _add_review_parsers(subparsers)
-    
-    # STATS command
     _add_stats_parser(subparsers)
     
     return parser
@@ -190,23 +193,31 @@ def main():
     parser = create_parser()
     args = parser.parse_args()
     
+    # Setup logging based on --verbose
+    setup_logging(args.verbose)
+    logging.debug("Parsed arguments: %s", args)
+    
     # Initialize database manager
     db_path = Path(args.db)
+    logging.info("Using database: %s", db_path)
     init_db_if_needed(db_path)
     db_manager = DatabaseManager(db_path)
+    logging.debug("Database manager initialized.")
     
     try:
         # Apply global configuration from CLI args
         if args.command == "scan":
-            # Update global config
             import media_tool.config as config
             if hasattr(args, 'phash_threshold'):
                 config.PHASH_THRESHOLD = args.phash_threshold
+                logging.debug("Set PHASH_THRESHOLD = %d", args.phash_threshold)
             if hasattr(args, 'large_threshold_mb'):
                 config.LARGE_FILE_BYTES = args.large_threshold_mb * 1024 * 1024
+                logging.debug("Set LARGE_FILE_BYTES = %d", config.LARGE_FILE_BYTES)
         
         # Execute commands
         if args.command == "scan":
+            logging.info("Starting scan command.")
             central_path = Path(args.central)
             scanner = ScanCommand(db_path, central_path)
             
@@ -225,67 +236,73 @@ def main():
                 resume_scan_id=args.resume_scan_id,
                 auto_checkpoint=not args.no_checkpoints
             )
+            logging.info("Scan completed.")
         
-        # Checkpoint commands
         elif args.command == "list-checkpoints":
+            logging.info("Listing checkpoints...")
             cmd_list_checkpoints(db_manager, args.source)
         
         elif args.command == "checkpoint-info":
+            logging.info("Fetching checkpoint info for scan_id=%s", args.scan_id)
             cmd_checkpoint_info(db_manager, args.scan_id)
         
         elif args.command == "cleanup-checkpoints":
+            logging.info("Cleaning up checkpoints (days=%d, scan_id=%s)", args.days, getattr(args, 'scan_id', None))
             cmd_cleanup_checkpoints(db_manager, args.days, getattr(args, 'scan_id', None))
         
-        # File management commands
         elif args.command == "make-original":
-            # Infer central path from existing records
+            logging.info("Making file %d original", args.file_id)
             with db_manager.get_connection() as conn:
                 row = conn.execute("SELECT central_path FROM files WHERE central_path IS NOT NULL LIMIT 1").fetchone()
                 central = Path(row[0]).parents[1] if row else Path.cwd()
             cmd_make_original(db_manager, central, args.file_id)
         
         elif args.command == "promote":
+            logging.info("Promoting file %d to group original", args.file_id)
             with db_manager.get_connection() as conn:
                 row = conn.execute("SELECT central_path FROM files WHERE central_path IS NOT NULL LIMIT 1").fetchone()
                 central = Path(row[0]).parents[1] if row else Path.cwd()
             cmd_promote(db_manager, central, args.file_id)
         
         elif args.command == "move-to-group":
+            logging.info("Moving file %d to group %d", args.file_id, args.group_id)
             with db_manager.get_connection() as conn:
                 row = conn.execute("SELECT central_path FROM files WHERE central_path IS NOT NULL LIMIT 1").fetchone()
                 central = Path(row[0]).parents[1] if row else Path.cwd()
             cmd_move_to_group(db_manager, central, args.file_id, args.group_id)
         
-        # Review commands
         elif args.command == "mark":
+            logging.info("Marking file %d as %s", args.file_id, args.status)
             cmd_mark(db_manager, args.file_id, args.status, args.note)
         
         elif args.command == "mark-group":
+            logging.info("Marking group %d as %s", args.group_id, args.status)
             cmd_mark_group(db_manager, args.group_id, args.status, args.note)
         
         elif args.command == "bulk-mark":
+            logging.info("Bulk marking files where path LIKE '%s' as %s", args.path_like, args.status)
             cmd_bulk_mark(db_manager, args.path_like, args.status)
         
         elif args.command == "review-queue":
+            logging.info("Showing review queue (limit=%d)", args.limit)
             cmd_review_queue(db_manager, args.limit)
         
         elif args.command == "export-backup-list":
+            logging.info("Exporting backup list to %s", args.out)
             cmd_export_backup_list(db_manager, Path(args.out), 
                                  args.include_undecided, args.include_large)
         
         elif args.command == "stats":
+            logging.info("Showing database stats (detailed=%s)", args.detailed)
             cmd_show_stats(db_manager, args.detailed)
     
     except KeyboardInterrupt:
-        print("\nOperation interrupted by user")
+        logging.warning("Operation interrupted by user.")
         if args.command == "scan" and hasattr(args, 'resume_scan_id') and not args.no_checkpoints:
             print("💡 You can resume this scan later using the checkpoint system.")
         sys.exit(1)
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        if args.verbose:
-            import traceback
-            traceback.print_exc()
+        logging.error("Error occurred: %s", e, exc_info=args.verbose)
         sys.exit(1)
 
 

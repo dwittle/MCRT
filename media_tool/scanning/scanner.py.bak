@@ -7,8 +7,6 @@ Coordinates all scanning phases: discovery, extraction, and grouping.
 """
 
 import csv
-from datetime import datetime, timezone
-import os
 import sqlite3
 import time
 from collections import Counter
@@ -26,8 +24,10 @@ from ..scanning.detector import DuplicateDetector
 from ..scanning.extractor import FeatureExtractor
 from ..storage.drive import DriveManager
 from ..utils.path import ensure_dir
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
-from typing import Any, Callable
+from ..utils.time import utc_now_strimport osfrom utils.timeouts import with_timeout
+
+
+
 
 class OptimizedScanner:
     """
@@ -36,42 +36,19 @@ class OptimizedScanner:
     """
     
     def __init__(self, db_path: Path, central_path: Path):
-        self.db_manager = DatabaseManager(db_path)
-        self.central_path = central_path
-        self.duplicate_detector = DuplicateDetector(self.db_manager)
-        self.checkpoint_manager = CheckpointManager(self.db_manager)
-        self.file_discovery = FileDiscovery(self.checkpoint_manager)
-        ensure_dir(central_path)
         
-    def utc_now_str(self) -> str:
-        """Return current UTC time in ISO-8601 format with 'Z'."""
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    def now_iso(self) -> str:
-        """Return current UTC time in ISO format for database storage."""
-        return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
-    def with_timeout(fn: Callable[..., Any], seconds: float, *args, **kwargs) -> Any:
-        if seconds is None or seconds <= 0:
-            return fn(*args, **kwargs)
-        with ThreadPoolExecutor(max_workers=1) as ex:
-            fut = ex.submit(fn, *args, **kwargs)
-            try:
-                return fut.result(timeout=seconds)
-            except _FuturesTimeout as e:
-                raise TimeoutError(f"Operation exceeded {seconds} seconds") from e
 
     def _run_with_timeout(self, label: str, seconds: float, func, **kwargs):
-        """ Run a stage function with optional timeout (0/None disables)."""
+        \"\"\"Run a stage function with optional timeout (0/None disables).\"\"\"
         if not seconds or seconds <= 0:
             return func(**kwargs)
         try:
             # Run via utils.timeouts.with_timeout
-            return self.with_timeout(lambda: func(**kwargs), seconds)
+            return with_timeout(lambda: func(**kwargs), seconds)
         except TimeoutError:
             print(f"[TIMEOUT] Stage '{label}' exceeded {seconds} seconds")
             raise
-        self.db_manager = DatabaseManager(db_path)
+self.db_manager = DatabaseManager(db_path)
         self.central_path = central_path
         self.duplicate_detector = DuplicateDetector(self.db_manager)
         self.checkpoint_manager = CheckpointManager(self.db_manager)
@@ -149,7 +126,7 @@ class OptimizedScanner:
                           chunk_size: int, auto_checkpoint: bool):
         """Print scan configuration header."""
         print("=" * 80)
-        print(f"MEDIA TOOL OPTIMIZED SCAN - {self.utc_now_str()}")
+        print(f"MEDIA TOOL OPTIMIZED SCAN - {utc_now_str()}")
         print("=" * 80)
         print(f"Source: {source}")
         print(f"Central: {self.central_path}")
@@ -164,7 +141,7 @@ class OptimizedScanner:
     def _print_scan_footer(self):
         """Print scan completion footer."""
         print("=" * 80)
-        print(f"SCAN COMPLETED - {self.utc_now_str()}")
+        print(f"SCAN COMPLETED - {utc_now_str()}")
         print("=" * 80)
     
     def _handle_resume(self, resume_scan_id: Optional[str], source: Path) -> Optional[ScanCheckpoint]:
@@ -192,10 +169,10 @@ class OptimizedScanner:
                      drive_id_hint: Optional[str], checkpoint: Optional[ScanCheckpoint]) -> int:
         """Get or create drive ID."""
         if checkpoint and checkpoint.drive_id:
-            print(f"[{self.utc_now_str()}] Using cached drive ID: {checkpoint.drive_id}")
+            print(f"[{utc_now_str()}] Using cached drive ID: {checkpoint.drive_id}")
             return checkpoint.drive_id
         
-        print(f"[{self.utc_now_str()}] Identifying drive...")
+        print(f"[{utc_now_str()}] Identifying drive...")
         return self._get_or_create_drive(source, wsl_mode, drive_label, drive_id_hint)
     
     def _execute_scan_pipeline(self, source: Path, drive_id: int, scan_id: str,
@@ -232,7 +209,7 @@ class OptimizedScanner:
                         checkpoint: Optional[ScanCheckpoint]) -> List[Tuple[Path, int]]:
         """Execute file discovery stage."""
         if checkpoint and checkpoint.stage in ['extraction', 'grouping', 'completed']:
-            print(f"[{self.utc_now_str()}] Loading cached discovered files...")
+            print(f"[{utc_now_str()}] Loading cached discovered files...")
             candidates = [(Path(p), s) for p, s in checkpoint.discovered_files]
             print(f"  - Loaded {len(candidates):,} files from checkpoint")
             return candidates
@@ -253,7 +230,7 @@ class OptimizedScanner:
                          auto_checkpoint: bool, checkpoint: Optional[ScanCheckpoint]) -> List[FileRecord]:
         """Execute feature extraction stage."""
         if checkpoint and checkpoint.stage in ['grouping', 'completed']:
-            print(f"[{self.utc_now_str()}] Skipping feature extraction (already completed)")
+            print(f"[{utc_now_str()}] Skipping feature extraction (already completed)")
             return self._load_records_from_db(drive_id, str(config.get('source_path', '')))
         
         with self.db_manager.get_connection() as conn:
@@ -262,7 +239,7 @@ class OptimizedScanner:
             """, (drive_id,)).fetchone()[0]
         
         if existing_count >= len(candidates):
-            print(f"[{self.utc_now_str()}] Files already processed ({existing_count} files in DB), skipping extraction and grouping")
+            print(f"[{utc_now_str()}] Files already processed ({existing_count} files in DB), skipping extraction and grouping")
             print(f"  - Candidates to process: {len(candidates)}")
             print(f"  - Files already in DB: {existing_count}")
             return self._load_records_from_db(drive_id, str(config.get('source_path', '')))
@@ -278,7 +255,7 @@ class OptimizedScanner:
                        checkpoint: Optional[ScanCheckpoint]):
         """Execute duplicate detection and grouping stage."""
         if checkpoint and checkpoint.stage == 'completed':
-            print(f"[{self.utc_now_str()}] Skipping grouping (scan already completed)")
+            print(f"[{utc_now_str()}] Skipping grouping (scan already completed)")
             return
         
         if records:  # Make sure we have records to check
@@ -290,7 +267,7 @@ class OptimizedScanner:
                 """, (records[0].drive_id,)).fetchone()[0]
                 
                 if grouped_count >= len(records):
-                    print(f"[{self.utc_now_str()}] Files already grouped ({grouped_count} files), skipping grouping stage")
+                    print(f"[{utc_now_str()}] Files already grouped ({grouped_count} files), skipping grouping stage")
                     print(f"  - Records to group: {len(records)}")
                     print(f"  - Files already grouped: {grouped_count}")
                     return  # Exit early, don't do any grouping
@@ -302,7 +279,7 @@ class OptimizedScanner:
                 source_path=config.get('source_path', ''),
                 drive_id=records[0].drive_id if records else 0,
                 stage='grouping',
-                timestamp=self.utc_now_str(),
+                timestamp=utc_now_str(),
                 processed_count=len(records),
                 config=config
             )
@@ -322,13 +299,13 @@ class OptimizedScanner:
         serial_or_uuid = drive_id_hint or serial_or_uuid
         
         with self.db_manager.get_connection() as conn:
-            row = conn.execute("SELECT drive_id FROM drives WHERE mount_point=?", (mount_path,)).fetchone()
+            row = conn.execute("SELECT drive_id FROM drives WHERE mount_path=?", (mount_path,)).fetchone()
             if row:
                 print(f" found existing drive {row[0]}")
                 return int(row[0])
             
             cursor = conn.execute(
-                "INSERT INTO drives (label, serial_or_uuid, mount_point) VALUES (?, ?, ?)",
+                "INSERT INTO drives (label, serial_or_uuid, mount_path) VALUES (?, ?, ?)",
                 (label, serial_or_uuid, mount_path)
             )
             conn.commit()
@@ -350,7 +327,7 @@ class OptimizedScanner:
                                         start_batch: int) -> List[FileRecord]:
         """Feature extraction with checkpoint support."""
         
-        print(f"[{self.utc_now_str()}] Analyzing file characteristics...")
+        print(f"[{utc_now_str()}] Analyzing file characteristics...")
         
         # Pre-analysis for optimization
         size_counts = Counter(size for _, size in candidates)
@@ -369,7 +346,7 @@ class OptimizedScanner:
         records = []
         processed_count = 0
         
-        print(f"[{self.utc_now_str()}] Processing {len(candidates):,} files with {io_workers} I/O workers (chunk size: {chunk_size})...")
+        print(f"[{utc_now_str()}] Processing {len(candidates):,} files with {io_workers} I/O workers (chunk size: {chunk_size})...")
         if start_batch > 0:
             print(f"  - Resuming from batch {start_batch + 1}")
         
@@ -403,7 +380,7 @@ class OptimizedScanner:
                     source_path=config.get('source_path', ''),
                     drive_id=drive_id,
                     stage='extraction',
-                    timestamp=self.utc_now_str(),
+                    timestamp=utc_now_str(),
                     discovered_files=[(str(p), s) for p, s in candidates],
                     processed_count=processed_count,
                     batch_number=chunk_idx,
@@ -418,7 +395,7 @@ class OptimizedScanner:
                 source_path=config.get('source_path', ''),
                 drive_id=drive_id,
                 stage='extraction',
-                timestamp=self.utc_now_str(),
+                timestamp=utc_now_str(),
                 discovered_files=[(str(p), s) for p, s in candidates],
                 processed_count=processed_count,
                 batch_number=total_chunks - 1,
@@ -426,7 +403,7 @@ class OptimizedScanner:
             )
             self.checkpoint_manager.save_checkpoint(final_checkpoint)
         
-        print(f"[{self.utc_now_str()}] Feature extraction complete: {len(records):,} records processed")
+        print(f"[{utc_now_str()}] Feature extraction complete: {len(records):,} records processed")
         return records
     
     def _process_extraction_chunk(self, chunk: List[Tuple[Path, int]], drive_id: int,
@@ -462,7 +439,7 @@ class OptimizedScanner:
     
     def _load_records_from_db(self, drive_id: int, source_path: str) -> List[FileRecord]:
         """Load FileRecord objects from database for resuming."""
-        print(f"[{self.utc_now_str()}] Loading processed records from database...")
+        print(f"[{utc_now_str()}] Loading processed records from database...")
         
         records = []
         with self.db_manager.get_connection() as conn:
@@ -495,12 +472,12 @@ class OptimizedScanner:
     
     def _process_duplicates_and_groups(self, records: List[FileRecord], phash_threshold: int):
         """Process records for duplicates and create groups."""
-        print(f"[{self.utc_now_str()}] Analyzing {len(records):,} records for duplicates...")
+        print(f"[{utc_now_str()}] Analyzing {len(records):,} records for duplicates...")
         
         # Group similar files within the current batch (FIXED LOGIC)
         groups = self._group_similar_records(records, phash_threshold)
         
-        print(f"[{self.utc_now_str()}] Grouping complete:")
+        print(f"[{utc_now_str()}] Grouping complete:")
         
         duplicate_groups = [g for g in groups if len(g) > 1] 
         single_files = [g for g in groups if len(g) == 1]
@@ -519,7 +496,7 @@ class OptimizedScanner:
             self._create_group_from_records(group_records)
         
         print(f"  - Total duplicates found: {total_duplicates}")
-        print(f"[{self.utc_now_str()}] Database updates complete")
+        print(f"[{utc_now_str()}] Database updates complete")
 
     def _group_similar_records(self, records: List[FileRecord], phash_threshold: int) -> List[List[FileRecord]]:
         """Group similar records within the batch."""
@@ -659,7 +636,7 @@ class OptimizedScanner:
     
     def _batch_insert_large_files(self, records: List[FileRecord]):
         """Batch insert large file placeholders."""
-        print(f"[{self.utc_now_str()}] Inserting {len(records):,} large file placeholders...")
+        print(f"[{utc_now_str()}] Inserting {len(records):,} large file placeholders...")
         self.db_manager.batch_insert_files(records)
     
     def _create_new_groups(self, records: List[FileRecord]):
@@ -667,7 +644,7 @@ class OptimizedScanner:
         if not records:
             return
             
-        print(f"[{self.utc_now_str()}] Creating {len(records):,} new groups...")
+        print(f"[{utc_now_str()}] Creating {len(records):,} new groups...")
         
         created_groups = 0
         start_time = time.perf_counter()
@@ -702,7 +679,7 @@ class OptimizedScanner:
         if not similar:
             return
             
-        print(f"[{self.utc_now_str()}] Processing {len(similar):,} files into existing groups...")
+        print(f"[{utc_now_str()}] Processing {len(similar):,} files into existing groups...")
         
         promotions = 0
         duplicates_added = 0
@@ -823,7 +800,7 @@ class OptimizedScanner:
             source_path=source_path,
             drive_id=drive_id,
             stage='completed',
-            timestamp=self.utc_now_str(),
+            timestamp=utc_now_str(),
             processed_count=0,  # Will be updated with actual count
             config=config
         )
@@ -832,7 +809,7 @@ class OptimizedScanner:
     
     def _print_final_stats(self):
         """Print final scan statistics."""
-        print(f"[{self.utc_now_str()}] Generating scan summary...")
+        print(f"[{utc_now_str()}] Generating scan summary...")
         
         with self.db_manager.get_connection() as conn:
             # Overall counts
