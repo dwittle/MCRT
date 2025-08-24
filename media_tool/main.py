@@ -186,6 +186,8 @@ def _add_stats_parser(subparsers):
     stats_parser = subparsers.add_parser("stats", help="Show database statistics")
     stats_parser.add_argument("--detailed", action="store_true",
                             help="Show detailed breakdown")
+    stats_parser.add_argument("--json", action="store_true",
+                            help="Output statistics as JSON")
 
 
 def main():
@@ -294,7 +296,7 @@ def main():
         
         elif args.command == "stats":
             logging.info("Showing database stats (detailed=%s)", args.detailed)
-            cmd_show_stats(db_manager, args.detailed)
+            cmd_show_stats(db_manager, args.detailed, args.json)
     
     except KeyboardInterrupt:
         logging.warning("Operation interrupted by user.")

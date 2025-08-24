@@ -1,24 +1,49 @@
 #!/usr/bin/env python3
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
 import subprocess
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
+import shutil
+import sys
+
+def _detect_backend():
+    """
+    Returns ("import", callable) or ("exec", path) or ("module", "media_tool").
+    """
+    try:
+        from media_tool.main import main as media_tool_main  # prefer direct import
+        return ("import", media_tool_main)
+    except Exception:
+        pass
+
+    exe = shutil.which("media-tool")
+    if exe:
+        return ("exec", exe)
+
+    return ("module", "media_tool")
+
 class MediaToolCLI:
     """CLI interface with automatic path detection and enhanced debugging."""
     
-    def __init__(self, cli_path: str = None, db_path: str = None):
-        # Auto-detect paths
-        self.cli_path = self._find_cli_path(cli_path)
+    def __init__(self, cli_path: str = None, db_path: str = None, do_smoke_test: bool = False):
+        self.mode, self.cli_target = _detect_backend()
+        self.cli_path = (
+            "import:media_tool.main.main" if self.mode == "import"
+            else self.cli_target if self.mode == "exec"
+            else "module:media_tool"
+        )
         self.db_path = self._find_db_path(db_path)
-        
-        print(f"🔧 CLI Interface initialized:")
-        print(f"   CLI: {self.cli_path}")  
-        print(f"   DB: {self.db_path}")
-        
-        # Test CLI accessibility
-        self._test_cli_basic()
+
+        print("🔧 CLI Interface initialized:")
+        print(f"   CLI: {self.cli_path}")
+        print(f"   DB:  {self.db_path}")
+
+        if do_smoke_test:
+            self._test_cli_basic()
     
     def _find_cli_path(self, cli_path):
         """Find CLI script automatically."""
@@ -71,52 +96,67 @@ class MediaToolCLI:
         raise FileNotFoundError("media_index.db not found in any expected location")
     
     def _test_cli_basic(self):
-        """Test basic CLI functionality."""
         try:
-            # Test if CLI script is executable
-            cli_path = Path(self.cli_path)
-            if not os.access(cli_path, os.X_OK):
-                print(f"⚠️ CLI script is not executable: {cli_path}")
-                print(f"   Run: chmod +x {cli_path}")
-            
-            # Test basic command
-            print(f"🧪 Testing CLI with basic command...")
-            success, stdout, stderr = self.run_command('--help', timeout=10)
+            print("🧪 Testing CLI with basic command...")
+            buf_out, buf_err = io.StringIO(), io.StringIO()
+            # capture noisy --help output even in import mode
+            with redirect_stdout(buf_out), redirect_stderr(buf_err):
+                success, stdout, stderr = self.run_command("--help", timeout=10)
             if success:
-                print(f"✅ CLI help command successful")
+                print("✅ CLI help command successful")
             else:
-                print(f"❌ CLI help command failed:")
-                print(f"   STDERR: {stderr}")
-                print(f"   STDOUT: {stdout}")
-                
+                print("❌ CLI help command failed")
+                so, se = (stdout or "").strip(), (stderr or "").strip()
+                if se: print("   STDERR:", se[:500])
+                if so: print("   STDOUT:", so[:500])
         except Exception as e:
             print(f"❌ CLI test error: {e}")
     
     def run_command(self, *args, timeout: int = 60) -> Tuple[bool, str, str]:
-        """Run CLI command with enhanced debugging."""
-        cmd = [self.cli_path, '--db', self.db_path] + list(str(arg) for arg in args)
-        
-        print(f"🔧 Running command: {' '.join(cmd)}")
+        argv = ['--db', self.db_path, *[str(a) for a in args]]
+
+        print(f"🔧 Mode: {self.mode}")
         print(f"🔧 Working directory: {os.getcwd()}")
         print(f"🔧 Python path: {os.environ.get('PYTHONPATH', 'Not set')}")
-        
+
         try:
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True, 
-                timeout=timeout,
-                cwd=os.getcwd()
-            )
-            
-            print(f"🔧 Return code: {result.returncode}")
-            if result.stdout:
-                print(f"🔧 STDOUT (first 500 chars): {result.stdout[:500]}")
-            if result.stderr:
-                print(f"🔧 STDERR: {result.stderr}")
-                
-            return result.returncode == 0, result.stdout, result.stderr
-            
+            if self.mode == "import":
+                # Try calling main(argv). If signature doesn't accept argv, fall back to sys.argv.
+                from media_tool.main import main as media_tool_main  # re-import for clarity
+                try:
+                    rc = media_tool_main(argv)  # type: ignore[arg-type]
+                    rc = 0 if rc is None else int(rc)
+                    return rc == 0, "", ""
+                except TypeError:
+                    old_argv = sys.argv
+                    try:
+                        sys.argv = ["media-tool", *argv]
+                        rc = media_tool_main()
+                        rc = 0 if rc is None else int(rc)
+                        return rc == 0, "", ""
+                    finally:
+                        sys.argv = old_argv
+
+            elif self.mode == "exec":
+                cmd = [self.cli_target, *argv]  # e.g., /home/.../.venv/bin/media-tool
+                print(f"🔧 Running command: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                if result.stdout:
+                    print(f"🔧 STDOUT (first 500 chars): {result.stdout[:500]}")
+                if result.stderr:
+                    print(f"🔧 STDERR: {result.stderr}")
+                return result.returncode == 0, result.stdout, result.stderr
+
+            else:  # "module"
+                cmd = [sys.executable, "-m", "media_tool", *argv]
+                print(f"🔧 Running command: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                if result.stdout:
+                    print(f"🔧 STDOUT (first 500 chars): {result.stdout[:500]}")
+                if result.stderr:
+                    print(f"🔧 STDERR: {result.stderr}")
+                return result.returncode == 0, result.stdout, result.stderr
+
         except subprocess.TimeoutExpired:
             error_msg = f"Command timed out after {timeout}s"
             print(f"❌ {error_msg}")
@@ -279,7 +319,7 @@ class MediaToolCLI:
             import sqlite3
             with sqlite3.connect(self.db_path) as conn:
                 row = conn.execute("""
-                    SELECT f.path_on_drive, d.mount_path
+                    SELECT f.path_on_drive, d.mount_point
                     FROM files f
                     LEFT JOIN drives d ON d.drive_id = f.drive_id
                     WHERE f.file_id = ?
@@ -288,7 +328,7 @@ class MediaToolCLI:
                 if row:
                     return {
                         'path_on_drive': row[0],
-                        'mount_path': row[1] or ''
+                        'mount_point': row[1] or ''
                     }
                 return None
         except Exception as e:
@@ -629,7 +669,7 @@ class MediaToolCLI:
                     SELECT 
                         {', '.join(all_columns)},
                         d.label as drive_label, 
-                        d.mount_path,
+                        d.mount_point,
                         CASE WHEN f.file_id = g.original_file_id THEN 1 ELSE 0 END as is_original
                     FROM files f
                     LEFT JOIN drives d ON d.drive_id = f.drive_id

@@ -10,6 +10,9 @@ import io
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, render_template, abort, Response
 
+app = Flask(__name__)
+cli = None  # will be set in main()
+
 # Import PIL for placeholder image generation
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -19,22 +22,12 @@ except ImportError:
     PIL_AVAILABLE = False
     print("❌ PIL (Pillow) not available - install with: pip install Pillow")
 
-from cli_interface import MediaToolCLI
-
 # Create Flask app with template and static directories
 app = Flask(__name__, 
            template_folder='templates',
            static_folder='static')
 app.secret_key = os.environ.get('SECRET_KEY', 'media-tool-ui-secret')
 
-# Initialize CLI interface with auto-detection
-try:
-    cli = MediaToolCLI()
-    print("✅ CLI interface initialized successfully")
-except Exception as e:
-    print(f"❌ CLI initialization failed: {e}")
-    traceback.print_exc()
-    exit(1)
 
 def create_placeholder_image(width=400, height=300, text="Image Not Found", file_id=None):
     """Create a placeholder image when the original file is missing."""
@@ -928,7 +921,12 @@ def debug_info():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
-if __name__ == '__main__':
+def main(db_path=None, host="127.0.0.1", port=5000, debug=False, smoke_test=True):
+    
+    global cli 
+    # Delay heavy imports so __main__ can parse args first
+    from .cli_interface import MediaToolCLI
+
     # Check if PIL is available
     if not PIL_AVAILABLE:
         print("⚠️  PIL (Pillow) not available - placeholder images will be text-only")
@@ -936,18 +934,11 @@ if __name__ == '__main__':
     
     # Validate setup before starting
     print("🔍 Validating setup...")
-    
-    # Check if CLI is accessible
-    try:
-        success, stdout, stderr = cli.run_command('--help')
-        if success:
-            print("✅ CLI help test successful")
-        else:
-            print(f"❌ CLI help test failed:")
-            print(f"   STDERR: {stderr}")
-            print(f"   STDOUT: {stdout}")
-    except Exception as e:
-        print(f"❌ CLI validation error: {e}")
+
+    cli = MediaToolCLI()
+
+    # however you make `cli` visible to your routes:
+    app.config["CLI"] = cli
     
     # Check template directory
     template_dir = Path('templates')
@@ -989,3 +980,7 @@ if __name__ == '__main__':
     
     # Start the server
     app.run(debug=True, host='0.0.0.0', port=5000)
+
+    
+if __name__ == '__main__':
+    main();
