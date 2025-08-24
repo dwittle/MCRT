@@ -1,0 +1,37 @@
+PS C:\WINDOWS\system32> get-disk
+
+Number Friendly Name Serial Number                    HealthStatus         OperationalStatus      Total Size Partition
+                                                                                                             Style
+------ ------------- -------------                    ------------         -----------------      ---------- ----------
+0      ST3000DM00...             ZTT0WG5A             Healthy              Online                    2.73 TB GPT
+1      Samsung SS... S599NE0M904874K                  Healthy              Online                  931.51 GB MBR
+3      Seagate BU... NA9V9YTW                         Healthy              Offline                   1.82 TB GPT
+2      WDC  WDS10... 203563801229                     Healthy              Online                  931.51 GB GPT
+
+
+PS C:\WINDOWS\system32>
+
+
+PS C:\WINDOWS\system32> get-partition -disknumber 3
+
+
+   DiskPath: \\?\scsi#disk&ven_seagate&prod_bup_slim_bk#7&15f8128e&0&000000#{53f56307-b6bf-11d0-94f2-00a0c91efb8b}
+
+PartitionNumber  DriveLetter Offset                                        Size Type
+---------------  ----------- ------                                        ---- ----
+1                           20480                                       200 MB System
+2                           209735680                                934.88 GB Unknown
+3                           1004165824512                              7.45 GB Unknown
+4                           1012300042240                            455.06 GB Unknown
+5                           1501049126912                            464.93 GB Basic
+
+
+PS C:\WINDOWS\system32>
+
+
+
+PS C:\WINDOWS\system32> wsl --mount \\.\PHYSICALDRIVE3 --partition 2 --type hfsplus
+The disk was successfully mounted as '/mnt/wsl/PHYSICALDRIVE3p2'.
+Note: The location will be different if you have modified the automount.root setting in /etc/wsl.conf.
+To unmount and detach the disk, run 'wsl.exe --unmount \\.\PHYSICALDRIVE3'.
+PS C:\WINDOWS\system32>
