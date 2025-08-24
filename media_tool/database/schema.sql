@@ -1,16 +1,52 @@
+-- =========================================================
+-- Fresh schema for Media Consolidation & Review Tool (MCRT)
+-- Drops any existing tables and recreates them from scratch
+-- =========================================================
+
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
+PRAGMA foreign_keys=OFF;  -- temporarily OFF for drop/recreate
+
+-- ---------- Drop old tables if present ----------
+DROP TABLE IF EXISTS files;
+DROP TABLE IF EXISTS groups;
+DROP TABLE IF EXISTS scan_checkpoints;
+DROP TABLE IF EXISTS drives;
+
 PRAGMA foreign_keys=ON;
 
-CREATE TABLE IF NOT EXISTS drives (
+-- ---------- Drives ----------
+CREATE TABLE drives (
   drive_id    INTEGER PRIMARY KEY,
   label       TEXT,
   root_path   TEXT,
   wsl_mode    INTEGER DEFAULT 0,
+
+  -- New columns used by fast, no-probe drive identification
+  fingerprint TEXT,          -- stable ID: by-id name, PARTUUID, WWID, maj:min, or mount point
+  model       TEXT,
+  serial      TEXT,
+  wwid        TEXT,
+  partuuid    TEXT,
+  device      TEXT,          -- e.g., /dev/sdd2 (may be empty on WSL physical mounts)
+  mount_point TEXT,          -- e.g., /mnt/wsl/PHYSICALDRIVE3p2
+
   created_at  TEXT DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS files (
+-- Fingerprint should be unique when present (NULLs allowed)
+CREATE UNIQUE INDEX idx_drives_fingerprint ON drives(fingerprint);
+
+-- ---------- Groups ----------
+CREATE TABLE groups (
+  group_id          INTEGER PRIMARY KEY,
+  original_file_id  INTEGER,
+  created_at        TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY(original_file_id) REFERENCES files(file_id) ON DELETE SET NULL
+);
+
+-- ---------- Files ----------
+CREATE TABLE files (
   file_id       INTEGER PRIMARY KEY,
   hash_sha256   TEXT,
   phash         TEXT,
@@ -35,14 +71,15 @@ CREATE TABLE IF NOT EXISTS files (
   FOREIGN KEY(group_id)     REFERENCES groups(group_id)  ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS groups (
-  group_id          INTEGER PRIMARY KEY,
-  original_file_id  INTEGER,
-  created_at        TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY(original_file_id) REFERENCES files(file_id) ON DELETE SET NULL
-);
+-- Useful indexes
+CREATE UNIQUE INDEX idx_files_unique_path ON files(drive_id, path_on_drive);
+CREATE INDEX idx_files_sha       ON files(hash_sha256);
+CREATE INDEX idx_files_phash     ON files(phash);
+CREATE INDEX idx_files_size_fp   ON files(size_bytes, fast_fp);
+CREATE INDEX idx_files_group     ON files(group_id);
 
-CREATE TABLE IF NOT EXISTS scan_checkpoints (
+-- ---------- Scan checkpoints ----------
+CREATE TABLE scan_checkpoints (
   scan_id         TEXT PRIMARY KEY,
   source_path     TEXT NOT NULL,
   drive_id        INTEGER,
@@ -55,11 +92,10 @@ CREATE TABLE IF NOT EXISTS scan_checkpoints (
   discovered_json TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_checkpoints_stage     ON scan_checkpoints(stage);
-CREATE INDEX IF NOT EXISTS idx_checkpoints_timestamp ON scan_checkpoints(timestamp);
+CREATE INDEX idx_checkpoints_stage     ON scan_checkpoints(stage);
+CREATE INDEX idx_checkpoints_timestamp ON scan_checkpoints(timestamp);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_files_unique_path ON files(drive_id, path_on_drive);
-CREATE INDEX IF NOT EXISTS idx_files_sha       ON files(hash_sha256);
-CREATE INDEX IF NOT EXISTS idx_files_phash     ON files(phash);
-CREATE INDEX IF NOT EXISTS idx_files_size_fp   ON files(size_bytes, fast_fp);
-CREATE INDEX IF NOT EXISTS idx_files_group     ON files(group_id);
+-- Final safety PRAGMAs
+PRAGMA foreign_keys=ON;
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
