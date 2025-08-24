@@ -2,6 +2,7 @@ import os, hashlib
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Tuple, Optional
 from PIL import Image
+from ..config import DEFAULT_LARGE_FILE_BYTES
 
 try:
     import imagehash
@@ -67,7 +68,6 @@ def run_scan_pipeline(
     root: str,
     writer,
     drive_id: int,
-    large_file_bytes: int = 500*1024*1024,
     max_phash_pixels: int = 24_000_000,
     io_workers: int = 4,
     cpu_workers: Optional[int] = None,
@@ -87,7 +87,7 @@ def run_scan_pipeline(
                 filetype,          # type
                 drive_id,          # drive_id
                 path,              # path_on_drive
-                int(size >= large_file_bytes),  # is_large
+                int(size >= DEFAULT_LARGE_FILE_BYTES),  # is_large
                 0,                 # copied
                 None,              # duplicate_of
                 None,              # group_id

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import List, Tuple, Optional
 
-from ..config import SUPPORTED_EXT
+from ..config import SUPPORTED_EXT, DEFAULT_SMALL_FILE_BYTES 
 from ..models.checkpoint import ScanCheckpoint
 from ..checkpoint.manager import CheckpointManager
 from ..utils.time import utc_now_str
@@ -143,8 +143,7 @@ class FileDiscovery:
                             try:
                                 size = entry.stat().st_size
                                 # SIZE FILTER - Skip files smaller than minimum
-                                min_file_size = 1 * 1024 * 1024  # 1 MB
-                                if min_file_size > 0 and size < min_file_size:
+                                if DEFAULT_SMALL_FILE_BYTES > 0 and size < DEFAULT_SMALL_FILE_BYTES:
                                     stats['filtered_small'] = stats.get('filtered_small', 0) + 1
                                     continue
                                 candidates.append((Path(entry.path), size))
