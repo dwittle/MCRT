@@ -94,7 +94,7 @@ def cmd_show_stats(
             """
             SELECT
                 d.label,
-                d.mount_point AS mount_point,
+                COALESCE(d.mount_point, d.mount_path) AS mount_display,
                 COUNT(f.file_id) AS file_count,
                 COALESCE(SUM(f.size_bytes), 0) AS total_bytes
             FROM drives d
@@ -104,15 +104,13 @@ def cmd_show_stats(
             """
         ).fetchall()
 
-        results["drives"] = [
-            {
-                "label": (label or "Unknown"),
-                "mount": (mount_point or ""),
-                "file_count": int(count or 0),
+        for (label, mount_display, count, bytes_total) in drive_rows:
+            results["drives"].append({
+                "label": label,
+                "mount": mount_display,
+                "file_count": count,
                 "total_bytes": int(bytes_total or 0),
-            }
-            for (label, mount_point, count, bytes_total) in drive_rows
-        ]
+            })
 
     # Output
     if as_json:

@@ -4,6 +4,9 @@ from typing import Tuple, Optional
 from PIL import Image
 from ..config import DEFAULT_LARGE_FILE_BYTES
 
+import logging
+logging.getLogger("PIL.TiffImagePlugin").setLevel(logging.WARNING)
+
 try:
     import imagehash
 except Exception:

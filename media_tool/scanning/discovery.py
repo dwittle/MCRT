@@ -11,7 +11,6 @@ import os
 import time
 from pathlib import Path
 from typing import List, Tuple, Optional
-
 from ..config import SUPPORTED_EXT, DEFAULT_SMALL_FILE_BYTES 
 from ..models.checkpoint import ScanCheckpoint
 from ..checkpoint.manager import CheckpointManager
@@ -21,8 +20,16 @@ from ..utils.time import utc_now_str
 class FileDiscovery:
     """Handles file discovery with caching and checkpoint support."""
     
+    scan_stats = {
+        'total_scanned': 0,
+        'permission_errors': 0,
+        'media_files_found': 0
+    }
+
+
     def __init__(self, checkpoint_manager: Optional[CheckpointManager] = None):
         self.checkpoint_manager = checkpoint_manager
+    
     
     def discover_files(self, source: Path, skip_discovery: bool = False, 
                       scan_id: Optional[str] = None, drive_id: Optional[int] = None,
@@ -51,11 +58,6 @@ class FileDiscovery:
         print(f"[{utc_now_str()}] Discovering media files in {source}...")
         
         candidates = []
-        stats = {
-            'total_scanned': 0,
-            'permission_errors': 0,
-            'media_files_found': 0
-        }
         
         start_time = time.perf_counter()
         
@@ -119,20 +121,22 @@ class FileDiscovery:
     def _scan_recursive(self, path: Path, candidates: List[Tuple[Path, int]], 
                        stats: dict, scan_id: Optional[str], drive_id: Optional[int],
                        config: Optional[dict], auto_checkpoint: bool):
+
+
         """Recursively scan directory for media files."""
         try:
             with os.scandir(path) as entries:
                 for entry in entries:
-                    stats['total_scanned'] += 1
-                    
+                    self.scan_stats['total_scanned'] += 1
+
                     # Progress reporting
-                    if stats['total_scanned'] % 10000 == 0:
-                        print(f"  - Scanned {stats['total_scanned']:,} items, "
-                              f"found {len(candidates):,} media files...", flush=True)
+                    if self.scan_stats['total_scanned'] % 10000 == 0:
+                        print(f"  - Scanned {self.scan_stats['total_scanned']:,} items, "
+                              f"found {len(candidates):,} media files...  path: {path}", flush=True)
                         
                         # Periodic checkpoint during discovery
                         if (auto_checkpoint and self.checkpoint_manager and 
-                            scan_id and stats['total_scanned'] % 50000 == 0):
+                            scan_id and self.scan_stats['total_scanned'] % 50000 == 0):
                             self._save_periodic_checkpoint(
                                 scan_id, path, drive_id, candidates, config, stats
                             )
@@ -144,12 +148,12 @@ class FileDiscovery:
                                 size = entry.stat().st_size
                                 # SIZE FILTER - Skip files smaller than minimum
                                 if DEFAULT_SMALL_FILE_BYTES > 0 and size < DEFAULT_SMALL_FILE_BYTES:
-                                    stats['filtered_small'] = stats.get('filtered_small', 0) + 1
+                                    self.scan_stats['filtered_small'] = self.scan_stats.get('filtered_small', 0) + 1
                                     continue
                                 candidates.append((Path(entry.path), size))
-                                stats['media_files_found'] += 1
+                                self.scan_stats['media_files_found'] += 1
                             except OSError:
-                                stats['permission_errors'] += 1
+                                self.scan_stats['permission_errors'] += 1
                                 continue
                     
                     # Recurse into directories
@@ -160,11 +164,11 @@ class FileDiscovery:
                                 scan_id, drive_id, config, auto_checkpoint
                             )
                         except (PermissionError, OSError):
-                            stats['permission_errors'] += 1
+                            self.scan_stats['permission_errors'] += 1
                             continue
                         
         except (PermissionError, OSError):
-            stats['permission_errors'] += 1
+            self.scan_stats['permission_errors'] += 1
     
     def _is_media_file(self, filename: str) -> bool:
         """Check if file is a supported media type."""
@@ -225,11 +229,11 @@ class FileDiscovery:
                                 stats: dict, elapsed: float):
         """Print discovery completion summary."""
         print(f"[{utc_now_str()}] Discovery complete: {len(candidates):,} media files")
-        print(f"  - Total scanned: {stats['total_scanned']:,} items in {elapsed:.1f}s "
-              f"({stats['total_scanned']/elapsed:.0f} items/s)")
+        print(f"  - Total scanned: {self.scan_stats['total_scanned']:,} items in {elapsed:.1f}s "
+              f"({self.scan_stats['total_scanned']/elapsed:.0f} items/s)")
         
-        if stats['permission_errors'] > 0:
-            print(f"  - Permission errors: {stats['permission_errors']:,}")
+        if self.scan_stats['permission_errors'] > 0:
+            print(f"  - Permission errors: {self.scan_stats['permission_errors']:,}")
         
         # File type breakdown
         if candidates:

@@ -322,13 +322,13 @@ class OptimizedScanner:
         serial_or_uuid = drive_id_hint or serial_or_uuid
         
         with self.db_manager.get_connection() as conn:
-            row = conn.execute("SELECT drive_id FROM drives WHERE mount_point=?", (mount_path,)).fetchone()
+            row = conn.execute("SELECT drive_id FROM drives WHERE mount_path=?", (mount_path,)).fetchone()
             if row:
                 print(f" found existing drive {row[0]}")
                 return int(row[0])
             
             cursor = conn.execute(
-                "INSERT INTO drives (label, serial_or_uuid, mount_point) VALUES (?, ?, ?)",
+                "INSERT INTO drives (label, serial_or_uuid, mount_path) VALUES (?, ?, ?)",
                 (label, serial_or_uuid, mount_path)
             )
             conn.commit()

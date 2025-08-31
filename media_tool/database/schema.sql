@@ -29,7 +29,7 @@ CREATE TABLE drives (
   wwid        TEXT,
   partuuid    TEXT,
   device      TEXT,          -- e.g., /dev/sdd2 (may be empty on WSL physical mounts)
-  mount_point TEXT,          -- e.g., /mnt/wsl/PHYSICALDRIVE3p2
+  mount_path TEXT,          -- e.g., /mnt/wsl/PHYSICALDRIVE3p2
 
   created_at  TEXT DEFAULT (datetime('now'))
 );

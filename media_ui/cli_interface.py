@@ -115,9 +115,13 @@ class MediaToolCLI:
     def run_command(self, *args, timeout: int = 60) -> Tuple[bool, str, str]:
         argv = ['--db', self.db_path, *[str(a) for a in args]]
 
+        
         print(f"🔧 Mode: {self.mode}")
         print(f"🔧 Working directory: {os.getcwd()}")
         print(f"🔧 Python path: {os.environ.get('PYTHONPATH', 'Not set')}")
+
+        argv = sys.argv[1:]
+        print(f"sys.argv = ['media-tool', *argv]  # argv={argv!r}")
 
         try:
             if self.mode == "import":
@@ -319,7 +323,7 @@ class MediaToolCLI:
             import sqlite3
             with sqlite3.connect(self.db_path) as conn:
                 row = conn.execute("""
-                    SELECT f.path_on_drive, d.mount_point
+                    SELECT f.path_on_drive, d.mount_path
                     FROM files f
                     LEFT JOIN drives d ON d.drive_id = f.drive_id
                     WHERE f.file_id = ?
@@ -328,7 +332,7 @@ class MediaToolCLI:
                 if row:
                     return {
                         'path_on_drive': row[0],
-                        'mount_point': row[1] or ''
+                        'mount_path': row[1] or ''
                     }
                 return None
         except Exception as e:
@@ -669,7 +673,7 @@ class MediaToolCLI:
                     SELECT 
                         {', '.join(all_columns)},
                         d.label as drive_label, 
-                        d.mount_point,
+                        d.mount_path,
                         CASE WHEN f.file_id = g.original_file_id THEN 1 ELSE 0 END as is_original
                     FROM files f
                     LEFT JOIN drives d ON d.drive_id = f.drive_id
