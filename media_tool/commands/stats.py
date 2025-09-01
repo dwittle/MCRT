@@ -12,6 +12,7 @@ import json
 import logging
 import sys
 from typing import Dict, Any
+from ..jsonio import success
 
 from ..config import LARGE_FILE_BYTES
 from ..database.manager import DatabaseManager
@@ -115,8 +116,7 @@ def cmd_show_stats(
 
     # Output
     if as_json:
-        sys.stdout.write(json.dumps(results, indent=2, ensure_ascii=False))
-        sys.stdout.write("\n")
+        return success("stats", results)
     else:
         logger.info("=== Database Statistics ===")
         logger.info("Files: %s", f"{results['counts']['files']:,}")
@@ -147,6 +147,6 @@ def cmd_show_stats(
             for d in results.get("drives", []):
                 gb = (d["total_bytes"] or 0) / (1024 ** 3)
                 logger.info("  %s (%s): %s files, %.1f GB",
-                            d["label"], d["mount"], f"{d['file_count']:,}", gb)
+                            d["label"], d["mount_path"], f"{d['file_count']:,}", gb)
 
     return results

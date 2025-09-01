@@ -35,3 +35,24 @@ The disk was successfully mounted as '/mnt/wsl/PHYSICALDRIVE3p2'.
 Note: The location will be different if you have modified the automount.root setting in /etc/wsl.conf.
 To unmount and detach the disk, run 'wsl.exe --unmount \\.\PHYSICALDRIVE3'.
 PS C:\WINDOWS\system32>
+
+
+PowerShell
+Get-Disk | ForEach-Object {
+    $disk = $_
+    Get-Partition -DiskNumber $disk.Number | ForEach-Object {
+        $part = $_
+        [PSCustomObject]@{
+            DiskNumber   = $disk.Number
+            DiskModel    = $disk.FriendlyName
+            SizeGB       = [math]::Round($disk.Size/1GB,2)
+            PartitionNum = $part.PartitionNumber
+            DriveLetter  = $part.DriveLetter
+            PartitionSizeGB = [math]::Round($part.Size/1GB,2)
+        }
+    }
+} | Format-Table -AutoSize
+
+wsl --mount \\.\PHYSICALDRIVE1 --partition 2 --type hfsplus
+
+

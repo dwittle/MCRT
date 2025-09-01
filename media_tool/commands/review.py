@@ -8,21 +8,26 @@ Review and correction command implementations for the Media Consolidation Tool.
 import csv
 from pathlib import Path
 from typing import Optional
-
 from ..config import REVIEW_STATUSES, LARGE_FILE_BYTES
 from ..database.manager import DatabaseManager
 from ..utils.path import ensure_dir
 from ..utils.time import now_iso, utc_now_str
+from ..jsonio import success, error
 
 
-def cmd_make_original(db_manager: DatabaseManager, central: Path, file_id: int):
+def cmd_make_original(db_manager: DatabaseManager, central: Path, file_id: int, as_json: bool = False):
     """Make a file its own original (split from group)."""
     with db_manager.get_connection() as conn:
-        row = conn.execute("SELECT group_id FROM files WHERE file_id=?", (file_id,)).fetchone()
+        row = conn.execute("SELECT group_id, path_on_drive FROM files WHERE file_id=?", (file_id,)).fetchone()
         if not row:
-            print("File not found")
-            return
-            
+            if as_json:
+                return error("make-original", f"File {file_id} not found")
+            else:
+                print("File not found")
+                return
+        
+        old_group_id, file_path = row
+        
         # Create new group
         cursor = conn.execute("INSERT INTO groups (original_file_id) VALUES (?)", (file_id,))
         new_group_id = cursor.lastrowid
@@ -32,18 +37,29 @@ def cmd_make_original(db_manager: DatabaseManager, central: Path, file_id: int):
                     (new_group_id, file_id))
         conn.commit()
         
-        print(f"File {file_id} is now original of new group {new_group_id}")
+        if as_json:
+            return success("make-original", {
+                "file_id": file_id,
+                "old_group_id": old_group_id,
+                "new_group_id": new_group_id,
+                "file_path": file_path
+            })
+        else:
+            print(f"File {file_id} is now original of new group {new_group_id}")
 
 
-def cmd_promote(db_manager: DatabaseManager, central: Path, file_id: int):
+def cmd_promote(db_manager: DatabaseManager, central: Path, file_id: int, as_json: bool = False):
     """Promote file to be group's original."""
     with db_manager.get_connection() as conn:
-        row = conn.execute("SELECT group_id FROM files WHERE file_id=?", (file_id,)).fetchone()
+        row = conn.execute("SELECT group_id, path_on_drive FROM files WHERE file_id=?", (file_id,)).fetchone()
         if not row or not row[0]:
-            print("File not found or not in a group")
-            return
-            
-        group_id = row[0]
+            if as_json:
+                return error("promote", f"File {file_id} not found or not in a group")
+            else:
+                print("File not found or not in a group")
+                return
+        
+        group_id, file_path = row
         
         # Get current original
         orig_row = conn.execute("""
@@ -63,71 +79,172 @@ def cmd_promote(db_manager: DatabaseManager, central: Path, file_id: int):
                     (file_id, group_id, file_id))
         conn.commit()
         
-        print(f"Promoted file {file_id} to original of group {group_id}")
+        if as_json:
+            return success("promote", {
+                "file_id": file_id,
+                "group_id": group_id,
+                "old_original_id": old_original_id,
+                "file_path": file_path
+            })
+        else:
+            print(f"Promoted file {file_id} to original of group {group_id}")
 
 
-def cmd_move_to_group(db_manager: DatabaseManager, central: Path, file_id: int, target_group_id: int):
+def cmd_move_to_group(db_manager: DatabaseManager, central: Path, file_id: int, target_group_id: int, as_json: bool = False):
     """Move file to existing group."""
     with db_manager.get_connection() as conn:
+        # Check if file exists
+        file_row = conn.execute("SELECT group_id, path_on_drive FROM files WHERE file_id=?", (file_id,)).fetchone()
+        if not file_row:
+            if as_json:
+                return error("move-to-group", f"File {file_id} not found")
+            else:
+                print("File not found")
+                return
+        
+        old_group_id, file_path = file_row
+        
         # Get target group's original
         orig_row = conn.execute("SELECT original_file_id FROM groups WHERE group_id=?", 
                                (target_group_id,)).fetchone()
         if not orig_row:
-            print("Target group not found")
-            return
-            
+            if as_json:
+                return error("move-to-group", f"Target group {target_group_id} not found")
+            else:
+                print("Target group not found")
+                return
+        
         target_original = orig_row[0]
         conn.execute("UPDATE files SET group_id=?, duplicate_of=? WHERE file_id=?",
                     (target_group_id, target_original, file_id))
         conn.commit()
         
-        print(f"Moved file {file_id} to group {target_group_id}")
+        if as_json:
+            return success("move-to-group", {
+                "file_id": file_id,
+                "old_group_id": old_group_id,
+                "new_group_id": target_group_id,
+                "target_original_id": target_original,
+                "file_path": file_path
+            })
+        else:
+            print(f"Moved file {file_id} to group {target_group_id}")
 
 
-def cmd_mark(db_manager: DatabaseManager, file_id: int, status: str, note: Optional[str]):
+def cmd_mark(db_manager: DatabaseManager, file_id: int, new_status: str, note: Optional[str] = None, as_json: bool = False):
     """Mark file review status."""
-    if status not in REVIEW_STATUSES:
-        print(f"Invalid status. Use: {', '.join(REVIEW_STATUSES)}")
-        return
-        
+    if new_status not in REVIEW_STATUSES:
+        if as_json:
+            return error("mark", f"Invalid status. Use: {', '.join(REVIEW_STATUSES)}")
+        else:
+            print(f"Invalid status. Use: {', '.join(REVIEW_STATUSES)}")
+            return
+    
     with db_manager.get_connection() as conn:
+        row = conn.execute("SELECT review_status, path_on_drive FROM files WHERE file_id=?", (file_id,)).fetchone()
+        if not row:
+            if as_json:
+                return error("mark", f"File {file_id} not found")
+            else:
+                print("File not found")
+                return
+
+        old_status, file_path = row
+
         conn.execute("UPDATE files SET review_status=?, reviewed_at=?, review_note=? WHERE file_id=?",
-                    (status, now_iso(), note, file_id))
+                    (new_status, now_iso(), note, file_id))
         conn.commit()
         
-    print(f"Marked file {file_id} as {status}")
+    if as_json:
+        return success("mark", {
+            "file_id": file_id,
+            "old_status": old_status,
+            "new_status": new_status,
+            "note": note,
+            "file_path": file_path,
+            "changed": old_status != new_status
+        })
+    else:
+        print(f"Marked file {file_id} as {new_status}")
 
 
-def cmd_mark_group(db_manager: DatabaseManager, group_id: int, status: str, note: Optional[str]):
+def cmd_mark_group(db_manager: DatabaseManager, group_id: int, new_status: str, note: Optional[str] = None, as_json: bool = False):
     """Mark entire group review status."""
-    if status not in REVIEW_STATUSES:
-        print(f"Invalid status. Use: {', '.join(REVIEW_STATUSES)}")
-        return
-        
     with db_manager.get_connection() as conn:
-        conn.execute("UPDATE files SET review_status=?, reviewed_at=?, review_note=? WHERE group_id=?",
-                    (status, now_iso(), note, group_id))
-        conn.commit()
+        # Check if group exists
+        group_row = conn.execute("SELECT original_file_id FROM groups WHERE group_id=?", (group_id,)).fetchone()
+        if not group_row:
+            if as_json:
+                return error("mark-group", f"Group {group_id} not found")
+            else:
+                print("Group not found")
+                return
         
-    print(f"Marked group {group_id} as {status}")
+        # Update all files in the group
+        cursor = conn.execute("UPDATE files SET review_status=?, reviewed_at=?, review_note=? WHERE group_id=?", 
+                             (new_status, now_iso(), note, group_id))
+        conn.commit()
+        updated_count = cursor.rowcount or 0
+
+    if as_json:
+        return success("mark-group", {
+            "group_id": group_id,
+            "new_status": new_status,
+            "note": note,
+            "files_updated": updated_count
+        })
+    else:
+        print(f"Marked group {group_id} as {new_status} ({updated_count} files updated)")
 
 
-def cmd_bulk_mark(db_manager: DatabaseManager, path_like: str, status: str):
+def cmd_bulk_mark(db_manager: DatabaseManager, path_like: str, new_status: str, 
+                 limit: int = 100, preview: bool = False, as_json: bool = False):
     """Bulk mark files by path pattern."""
-    if status not in REVIEW_STATUSES:
-        print(f"Invalid status. Use: {', '.join(REVIEW_STATUSES)}")
-        return
-        
     with db_manager.get_connection() as conn:
-        like_pattern = f"%{path_like}%"
-        cursor = conn.execute("UPDATE files SET review_status=?, reviewed_at=? WHERE path_on_drive LIKE ?",
-                            (status, now_iso(), like_pattern))
-        conn.commit()
+        # Get matches
+        matches = conn.execute(
+            "SELECT file_id, path_on_drive FROM files WHERE path_on_drive LIKE ? LIMIT ?",
+            (path_like, limit)
+        ).fetchall()
+
+        total_matches = conn.execute("SELECT COUNT(1) FROM files WHERE path_on_drive LIKE ?", (path_like,)).fetchone()[0]
         
-    print(f"Bulk marked {cursor.rowcount} files matching '{path_like}' as {status}")
+        sample_files = [{"file_id": f, "path_on_drive": p} for (f, p) in matches]
+
+        if preview:
+            if as_json:
+                return success("bulk-mark", {
+                    "mode": "preview",
+                    "pattern": path_like,
+                    "total_matches": int(total_matches),
+                    "sample_files": sample_files,
+                    "limit": limit
+                })
+            else:
+                print(f"Preview: Found {total_matches} files matching pattern '{path_like}'")
+                print(f"Sample files (showing first {len(matches)}):")
+                for file_id, path in matches:
+                    print(f"  {file_id}: {path}")
+                return
+
+        # Apply changes
+        conn.execute("UPDATE files SET review_status=?, reviewed_at=? WHERE path_on_drive LIKE ?", 
+                    (new_status, now_iso(), path_like))
+        conn.commit()
+
+    if as_json:
+        return success("bulk-mark", {
+            "mode": "apply",
+            "pattern": path_like,
+            "new_status": new_status,
+            "total_matches": int(total_matches),
+            "limit": limit
+        })
+    else:
+        print(f"Bulk marked {total_matches} files as {new_status}")
 
 
-def cmd_review_queue(db_manager: DatabaseManager, limit: int):
+def cmd_review_queue(db_manager: DatabaseManager, limit: int = 100, as_json: bool = False):
     """Show review queue."""
     with db_manager.get_connection() as conn:
         rows = conn.execute("""
@@ -139,10 +256,34 @@ def cmd_review_queue(db_manager: DatabaseManager, limit: int):
             LIMIT ?
         """, (limit,)).fetchall()
     
+    if as_json:
+        items = []
+        for r in rows:
+            file_id, gid, typ, w, h, size, status, path = r
+            items.append({
+                "file_id": file_id,
+                "group_id": gid if gid != -1 else None,
+                "type": typ,
+                "width": w,
+                "height": h,
+                "dimensions": f"{w}x{h}" if (w and h) else None,
+                "size_bytes": size,
+                "review_status": status,
+                "path_on_drive": path
+            })
+        
+        return success("review-queue", {
+            "items": items,
+            "count": len(items),
+            "limit": limit
+        })
+    
+    # Human-readable output
     if not rows:
-        print("No undecided items in review queue")
+        print("No items in review queue.")
         return
         
+    print(f"Review queue ({len(rows)} items, limit={limit}):")
     print("file_id | group_id | type  | dimensions | size_bytes | status     | path")
     print("-" * 80)
     for r in rows:
@@ -151,40 +292,39 @@ def cmd_review_queue(db_manager: DatabaseManager, limit: int):
         print(f"{file_id:7d} | {gid:8d} | {typ:5s} | {dims:>10s} | {size or 0:10d} | {status:10s} | {path}")
 
 
-def cmd_export_backup_list(db_manager: DatabaseManager, out_path: Path, 
-                          include_undecided: bool, include_large: bool):
+def cmd_export_backup_list(db_manager: DatabaseManager, out_path: Path, include_undecided: bool = False, 
+                          include_large: bool = False, as_json: bool = False):
     """Export backup manifest CSV."""
-    print(f"[{utc_now_str()}] Exporting backup manifest to {out_path}...")
-    
-    status_filter = "IN ('keep','undecided')" if include_undecided else "= 'keep'"
-    
     with db_manager.get_connection() as conn:
-        print("  - Querying originals...", end="", flush=True)
+        where_conditions = ["1=1"]
+        if not include_undecided:
+            where_conditions.append("review_status <> 'undecided'")
+        if not include_large:
+            where_conditions.append("is_large = 0")
+
         rows = conn.execute(f"""
-            SELECT g.group_id, f.file_id, f.central_path, f.width, f.height, 
-                   f.size_bytes, f.hash_sha256, f.review_status
-            FROM groups g
-            JOIN files f ON f.file_id = g.original_file_id
-            WHERE f.review_status {status_filter}
-            AND ((? = 1) OR (f.is_large = 0))
-            ORDER BY g.group_id
-        """, (1 if include_large else 0,)).fetchall()
-        print(f" {len(rows):,} records")
-    
-    print("  - Writing CSV...", end="", flush=True)
+            SELECT file_id, path_on_drive, central_path, size_bytes, type, review_status
+            FROM files
+            WHERE {' AND '.join(where_conditions)}
+        """).fetchall()
+
     ensure_dir(out_path.parent)
+    
     with out_path.open('w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
-        writer.writerow(["group_id", "original_file_id", "central_original_path",
-                        "width", "height", "size_bytes", "hash_sha256", "review_status"])
+        writer.writerow(["file_id", "path_on_drive", "central_path", "size_bytes", "type", "review_status"])
         writer.writerows(rows)
-    print(" ✓")
     
-    # Calculate totals
-    total_size = sum(row[5] or 0 for row in rows)
-    total_gb = total_size / (1024**3)
-    
-    print(f"[{utc_now_str()}] Export complete:")
-    print(f"  - Files: {len(rows):,} originals")
-    print(f"  - Size: {total_gb:.1f} GB")
-    print(f"  - Location: {out_path}")
+    if as_json:
+        return success("export-backup-list", {
+            "output_file": str(out_path),
+            "records_exported": len(rows),
+            "include_undecided": include_undecided,
+            "include_large": include_large,
+            "filters_applied": {
+                "exclude_undecided": not include_undecided,
+                "exclude_large": not include_large
+            }
+        })
+    else:
+        print(f"Exported {len(rows)} records to {out_path}")

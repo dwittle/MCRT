@@ -219,3 +219,4 @@ mcrt_patch/*
 *.jpg
 scripts/ignore/*
 tmp/
+mac/

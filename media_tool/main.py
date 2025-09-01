@@ -20,6 +20,7 @@ from .commands.review import (
     cmd_bulk_mark, cmd_review_queue, cmd_export_backup_list
 )
 from .commands.stats import cmd_show_stats
+from .jsonio import enable_json_logging
 
 
 def setup_logging(verbose: bool):
@@ -46,14 +47,14 @@ def create_parser():
   %(prog)s scan --source /mnt/photos --central ./data --resume-scan-id scan_20241210_143012_a1b2c3d4
   
   # Checkpoint management
-  %(prog)s list-checkpoints
-  %(prog)s checkpoint-info --scan-id scan_20241210_143012_a1b2c3d4
-  %(prog)s cleanup-checkpoints --days 7
+  %(prog)s list-checkpoints --json
+  %(prog)s checkpoint-info --scan-id scan_20241210_143012_a1b2c3d4 --json
+  %(prog)s cleanup-checkpoints --days 7 --json
   
   # Review workflow
-  %(prog)s review-queue --limit 50
-  %(prog)s mark --file-id 123 --status keep
-  %(prog)s export-backup-list --out backup.csv
+  %(prog)s review-queue --limit 50 --json
+  %(prog)s mark --file-id 123 --status keep --json
+  %(prog)s export-backup-list --out backup.csv --json
         """
     )
     
@@ -62,6 +63,8 @@ def create_parser():
                        help="SQLite database path (default: media_index.db)")
     parser.add_argument("--verbose", "-v", action="store_true",
                        help="Enable verbose (DEBUG) output")
+    parser.add_argument("--json", action="store_true",
+                       help="Output results as JSON instead of human-readable text")
     
     subparsers = parser.add_subparsers(dest="command", required=True, help="Available commands")
     
@@ -116,14 +119,17 @@ def _add_checkpoint_parsers(subparsers):
     """Add checkpoint command parsers."""
     list_chk_parser = subparsers.add_parser("list-checkpoints", help="List available checkpoints")
     list_chk_parser.add_argument("--source", help="Filter by source path")
+    list_chk_parser.add_argument("--json", action="store_true", help="Output as JSON")
     
     info_chk_parser = subparsers.add_parser("checkpoint-info", help="Show checkpoint details")
     info_chk_parser.add_argument("--scan-id", required=True, help="Checkpoint scan ID")
+    info_chk_parser.add_argument("--json", action="store_true", help="Output as JSON")
     
     cleanup_chk_parser = subparsers.add_parser("cleanup-checkpoints", help="Clean up old checkpoints")
     cleanup_chk_parser.add_argument("--days", type=int, default=7,
                                    help="Remove checkpoints older than N days (default: 7)")
     cleanup_chk_parser.add_argument("--scan-id", help="Remove specific checkpoint by scan ID")
+    cleanup_chk_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
 
 def _add_correction_parsers(subparsers):
@@ -132,11 +138,13 @@ def _add_correction_parsers(subparsers):
                                            help="Split file into its own group as original")
     make_orig_parser.add_argument("--file-id", type=int, required=True,
                                 help="File ID to make original")
+    make_orig_parser.add_argument("--json", action="store_true", help="Output as JSON")
     
     promote_parser = subparsers.add_parser("promote",
                                          help="Promote file to be group's original")
     promote_parser.add_argument("--file-id", type=int, required=True,
                               help="File ID to promote")
+    promote_parser.add_argument("--json", action="store_true", help="Output as JSON")
     
     move_parser = subparsers.add_parser("move-to-group",
                                       help="Move file to existing group")
@@ -144,6 +152,7 @@ def _add_correction_parsers(subparsers):
                            help="File ID to move")
     move_parser.add_argument("--group-id", type=int, required=True,
                            help="Target group ID")
+    move_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
 
 def _add_review_parsers(subparsers):
@@ -154,6 +163,7 @@ def _add_review_parsers(subparsers):
     mark_parser.add_argument("--status", choices=list(REVIEW_STATUSES), required=True,
                            help="Review status")
     mark_parser.add_argument("--note", help="Optional review note")
+    mark_parser.add_argument("--json", action="store_true", help="Output as JSON")
     
     mark_group_parser = subparsers.add_parser("mark-group", help="Mark entire group status")
     mark_group_parser.add_argument("--group-id", type=int, required=True,
@@ -161,16 +171,23 @@ def _add_review_parsers(subparsers):
     mark_group_parser.add_argument("--status", choices=list(REVIEW_STATUSES), required=True,
                                  help="Review status")
     mark_group_parser.add_argument("--note", help="Optional review note")
+    mark_group_parser.add_argument("--json", action="store_true", help="Output as JSON")
     
     bulk_mark_parser = subparsers.add_parser("bulk-mark", help="Bulk mark by path pattern")
     bulk_mark_parser.add_argument("--path-like", required=True,
                                 help="Path substring to match")
     bulk_mark_parser.add_argument("--status", choices=list(REVIEW_STATUSES), required=True,
                                 help="Review status")
+    bulk_mark_parser.add_argument("--limit", type=int, default=100,
+                                help="Maximum files to process (default: 100)")
+    bulk_mark_parser.add_argument("--preview", action="store_true",
+                                help="Preview matches without applying changes")
+    bulk_mark_parser.add_argument("--json", action="store_true", help="Output as JSON")
     
     queue_parser = subparsers.add_parser("review-queue", help="Show review queue")
     queue_parser.add_argument("--limit", type=int, default=100,
                             help="Maximum items to show (default: 100)")
+    queue_parser.add_argument("--json", action="store_true", help="Output as JSON")
     
     export_parser = subparsers.add_parser("export-backup-list", help="Export backup manifest")
     export_parser.add_argument("--out", required=True,
@@ -179,6 +196,7 @@ def _add_review_parsers(subparsers):
                               help="Include undecided items in export")
     export_parser.add_argument("--include-large", action="store_true", 
                               help="Include large files in export")
+    export_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
 
 def _add_stats_parser(subparsers):
@@ -195,8 +213,13 @@ def main():
     parser = create_parser()
     args = parser.parse_args()
     
-    # Setup logging based on --verbose
-    setup_logging(args.verbose)
+    # Setup logging based on --verbose (but suppress if JSON output requested)
+    if getattr(args, 'json', False):
+        # For JSON output, send logs to stderr and suppress info noise
+        enable_json_logging()
+    else:
+        setup_logging(args.verbose)
+    
     logging.debug("Parsed arguments: %s", args)
     
     # Initialize database manager
@@ -242,70 +265,80 @@ def main():
         
         elif args.command == "list-checkpoints":
             logging.info("Listing checkpoints...")
-            cmd_list_checkpoints(db_manager, args.source)
+            return cmd_list_checkpoints(db_manager, args.source, getattr(args, 'json', False))
         
         elif args.command == "checkpoint-info":
             logging.info("Fetching checkpoint info for scan_id=%s", args.scan_id)
-            cmd_checkpoint_info(db_manager, args.scan_id)
+            return cmd_checkpoint_info(db_manager, args.scan_id, getattr(args, 'json', False))
         
         elif args.command == "cleanup-checkpoints":
             logging.info("Cleaning up checkpoints (days=%d, scan_id=%s)", args.days, getattr(args, 'scan_id', None))
-            cmd_cleanup_checkpoints(db_manager, args.days, getattr(args, 'scan_id', None))
+            return cmd_cleanup_checkpoints(db_manager, args.days, getattr(args, 'scan_id', None), getattr(args, 'json', False))
         
         elif args.command == "make-original":
             logging.info("Making file %d original", args.file_id)
             with db_manager.get_connection() as conn:
                 row = conn.execute("SELECT central_path FROM files WHERE central_path IS NOT NULL LIMIT 1").fetchone()
                 central = Path(row[0]).parents[1] if row else Path.cwd()
-            cmd_make_original(db_manager, central, args.file_id)
+            return cmd_make_original(db_manager, central, args.file_id, getattr(args, 'json', False))
         
         elif args.command == "promote":
             logging.info("Promoting file %d to group original", args.file_id)
             with db_manager.get_connection() as conn:
                 row = conn.execute("SELECT central_path FROM files WHERE central_path IS NOT NULL LIMIT 1").fetchone()
                 central = Path(row[0]).parents[1] if row else Path.cwd()
-            cmd_promote(db_manager, central, args.file_id)
+            return cmd_promote(db_manager, central, args.file_id, getattr(args, 'json', False))
         
         elif args.command == "move-to-group":
             logging.info("Moving file %d to group %d", args.file_id, args.group_id)
             with db_manager.get_connection() as conn:
                 row = conn.execute("SELECT central_path FROM files WHERE central_path IS NOT NULL LIMIT 1").fetchone()
                 central = Path(row[0]).parents[1] if row else Path.cwd()
-            cmd_move_to_group(db_manager, central, args.file_id, args.group_id)
+            return cmd_move_to_group(db_manager, central, args.file_id, args.group_id, getattr(args, 'json', False))
         
         elif args.command == "mark":
             logging.info("Marking file %d as %s", args.file_id, args.status)
-            cmd_mark(db_manager, args.file_id, args.status, args.note)
+            return cmd_mark(db_manager, args.file_id, args.status, getattr(args, 'note', None), getattr(args, 'json', False))
         
         elif args.command == "mark-group":
             logging.info("Marking group %d as %s", args.group_id, args.status)
-            cmd_mark_group(db_manager, args.group_id, args.status, args.note)
+            return cmd_mark_group(db_manager, args.group_id, args.status, getattr(args, 'note', None), getattr(args, 'json', False))
         
         elif args.command == "bulk-mark":
             logging.info("Bulk marking files where path LIKE '%s' as %s", args.path_like, args.status)
-            cmd_bulk_mark(db_manager, args.path_like, args.status)
+            return cmd_bulk_mark(db_manager, args.path_like, args.status, 
+                               getattr(args, 'limit', 100), getattr(args, 'preview', False), getattr(args, 'json', False))
         
         elif args.command == "review-queue":
             logging.info("Showing review queue (limit=%d)", args.limit)
-            cmd_review_queue(db_manager, args.limit)
+            return cmd_review_queue(db_manager, args.limit, getattr(args, 'json', False))
         
         elif args.command == "export-backup-list":
             logging.info("Exporting backup list to %s", args.out)
-            cmd_export_backup_list(db_manager, Path(args.out), 
-                                 args.include_undecided, args.include_large)
+            return cmd_export_backup_list(db_manager, Path(args.out), 
+                                         args.include_undecided, args.include_large, getattr(args, 'json', False))
         
         elif args.command == "stats":
             logging.info("Showing database stats (detailed=%s)", args.detailed)
-            cmd_show_stats(db_manager, args.detailed, args.json)
+            return cmd_show_stats(db_manager, args.detailed, getattr(args, 'json', False))
     
     except KeyboardInterrupt:
-        logging.warning("Operation interrupted by user.")
-        if args.command == "scan" and hasattr(args, 'resume_scan_id') and not args.no_checkpoints:
-            print("💡 You can resume this scan later using the checkpoint system.")
-        sys.exit(1)
+        if getattr(args, 'json', False):
+            from .jsonio import error
+            return error(args.command, "Operation interrupted by user", code=130)
+        else:
+            logging.warning("Operation interrupted by user.")
+            if args.command == "scan" and hasattr(args, 'resume_scan_id') and not args.no_checkpoints:
+                print("💡 You can resume this scan later using the checkpoint system.")
+            sys.exit(130)
     except Exception as e:
-        logging.error("Error occurred: %s", e, exc_info=args.verbose)
-        sys.exit(1)
+        if getattr(args, 'json', False):
+            from .jsonio import error
+            debug_info = {"exception_type": type(e).__name__} if args.verbose else None
+            return error(args.command, str(e), debug=debug_info, code=1)
+        else:
+            logging.error("Error occurred: %s", e, exc_info=args.verbose)
+            sys.exit(1)
 
 
 if __name__ == "__main__":
