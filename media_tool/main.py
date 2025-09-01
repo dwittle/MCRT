@@ -243,6 +243,20 @@ def main():
         # Execute commands
         if args.command == "scan":
             logging.info("Starting scan command.")
+
+            # Validate that source path is absolute
+            source_path = Path(args.source)
+            if not source_path.is_absolute():
+                error_msg = f"Source path must be absolute, got: {args.source}"
+                if getattr(args, 'json', False):
+                    from .jsonio import error
+                    return error(args.command, error_msg, code=1)
+                else:
+                    logging.error(error_msg)
+                    print(f"Error: {error_msg}")
+                    print(f"Use: media-tool --db {args.db} scan --source \"$(pwd)/{args.source}\" --central {args.central}")
+                    sys.exit(1)
+
             central_path = Path(args.central)
             scanner = ScanCommand(db_path, central_path)
             

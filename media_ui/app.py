@@ -935,7 +935,7 @@ def main(db_path=None, host="127.0.0.1", port=5000, debug=False, smoke_test=True
     # Validate setup before starting
     print("🔍 Validating setup...")
 
-    cli = MediaToolCLI()
+    cli = MediaToolCLI(db_path=db_path)
 
     # however you make `cli` visible to your routes:
     app.config["CLI"] = cli
