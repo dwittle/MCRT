@@ -293,38 +293,84 @@ def cmd_review_queue(db_manager: DatabaseManager, limit: int = 100, as_json: boo
 
 
 def cmd_export_backup_list(db_manager: DatabaseManager, out_path: Path, include_undecided: bool = False, 
-                          include_large: bool = False, as_json: bool = False):
-    """Export backup manifest CSV."""
+                          include_large: bool = False, include_originals: bool = False, as_json: bool = False):
+    """Export backup manifest CSV with enhanced filtering options."""
     with db_manager.get_connection() as conn:
-        where_conditions = ["1=1"]
-        if not include_undecided:
-            where_conditions.append("review_status <> 'undecided'")
+        where_conditions = []
+        
+        # Base condition for files we want to include
+        status_conditions = []
+        
+        # Always include files marked as 'keep'
+        status_conditions.append("review_status = 'keep'")
+        
+        # Include undecided files if requested
+        if include_undecided:
+            status_conditions.append("review_status = 'undecided'")
+        
+        # Include originals even if undecided (when include_originals is True)
+        if include_originals:
+            # Include files that are group originals, regardless of status
+            # (but only if they're undecided, since 'keep' originals are already included above)
+            status_conditions.append("""
+                (review_status = 'undecided' AND 
+                 EXISTS (SELECT 1 FROM groups g WHERE g.original_file_id = files.file_id))
+            """)
+        
+        # Combine status conditions
+        if status_conditions:
+            where_conditions.append(f"({' OR '.join(status_conditions)})")
+        else:
+            # If no status conditions, include nothing (shouldn't happen with current logic)
+            where_conditions.append("1=0")
+        
+        # Handle large files
         if not include_large:
             where_conditions.append("is_large = 0")
 
-        rows = conn.execute(f"""
-            SELECT file_id, path_on_drive, central_path, size_bytes, type, review_status
+        # Build final query
+        where_clause = ' AND '.join(where_conditions) if where_conditions else '1=1'
+        
+        query = f"""
+            SELECT file_id, path_on_drive, central_path, size_bytes, type, review_status,
+                   CASE WHEN EXISTS (SELECT 1 FROM groups g WHERE g.original_file_id = files.file_id)
+                        THEN 1 ELSE 0 END as is_original
             FROM files
-            WHERE {' AND '.join(where_conditions)}
-        """).fetchall()
+            WHERE {where_clause}
+            ORDER BY is_original DESC, path_on_drive
+        """
+        
+        rows = conn.execute(query).fetchall()
 
     ensure_dir(out_path.parent)
     
     with out_path.open('w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
-        writer.writerow(["file_id", "path_on_drive", "central_path", "size_bytes", "type", "review_status"])
+        writer.writerow(["file_id", "path_on_drive", "central_path", "size_bytes", "type", "review_status", "is_original"])
         writer.writerows(rows)
+    
+    # Count originals vs regular files for reporting
+    original_count = sum(1 for row in rows if row[6])  # is_original column
+    regular_count = len(rows) - original_count
     
     if as_json:
         return success("export-backup-list", {
             "output_file": str(out_path),
             "records_exported": len(rows),
+            "originals_count": original_count,
+            "regular_files_count": regular_count,
             "include_undecided": include_undecided,
             "include_large": include_large,
+            "include_originals": include_originals,
             "filters_applied": {
                 "exclude_undecided": not include_undecided,
-                "exclude_large": not include_large
+                "exclude_large": not include_large,
+                "include_undecided_originals": include_originals
             }
         })
     else:
         print(f"Exported {len(rows)} records to {out_path}")
+        if include_originals and original_count > 0:
+            print(f"  - Included {original_count} originals (even if undecided)")
+        if regular_count > 0:
+            print(f"  - Included {regular_count} regular files")

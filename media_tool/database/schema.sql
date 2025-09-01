@@ -94,6 +94,19 @@ CREATE TABLE scan_checkpoints (
 
 CREATE INDEX idx_checkpoints_stage     ON scan_checkpoints(stage);
 CREATE INDEX idx_checkpoints_timestamp ON scan_checkpoints(timestamp);
+CREATE INDEX idx_files_review_status ON files(review_status);
+CREATE INDEX idx_files_drive_status ON files(drive_id, review_status);
+CREATE INDEX idx_files_duplicate_of ON files(duplicate_of);
+CREATE INDEX idx_files_type ON files(type);
+CREATE INDEX idx_files_size_type ON files(size_bytes, type);
+CREATE INDEX idx_files_large_status ON files(is_large, review_status);
+CREATE INDEX idx_files_created_at ON files(created_at);
+CREATE INDEX idx_files_reviewed_at ON files(reviewed_at) WHERE reviewed_at IS NOT NULL;
+CREATE INDEX idx_groups_original ON groups(original_file_id);
+CREATE INDEX idx_files_group_duplicate ON files(group_id, duplicate_of);
+CREATE INDEX idx_files_backup_export ON files(review_status, is_large) 
+  WHERE review_status IN ('keep', 'undecided');
+CREATE INDEX idx_files_path_pattern ON files(path_on_drive);
 
 -- Final safety PRAGMAs
 PRAGMA foreign_keys=ON;

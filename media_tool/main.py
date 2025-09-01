@@ -207,6 +207,8 @@ def _add_review_parsers(subparsers):
                               help="Include undecided items in export")
     export_parser.add_argument("--include-large", action="store_true", 
                               help="Include large files in export")
+    export_parser.add_argument("--include-originals", action="store_true",
+                              help="Include group originals even if marked undecided")
     export_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
 
@@ -344,7 +346,8 @@ def main():
         elif args.command == "export-backup-list":
             logging.info("Exporting backup list to %s", args.out)
             return cmd_export_backup_list(db_manager, Path(args.out), 
-                                         args.include_undecided, args.include_large, getattr(args, 'json', False))
+                                         args.include_undecided, args.include_large, 
+                                         getattr(args, 'include_originals', False), getattr(args, 'json', False))
         
         elif args.command == "stats":
             logging.info("Showing database stats (detailed=%s)", args.detailed)
