@@ -94,7 +94,7 @@ def cmd_show_stats(
             """
             SELECT
                 d.label,
-                COALESCE(d.mount_point, d.mount_path) AS mount_display,
+                d.mount_path AS mount_path,
                 COUNT(f.file_id) AS file_count,
                 COALESCE(SUM(f.size_bytes), 0) AS total_bytes
             FROM drives d
@@ -104,11 +104,12 @@ def cmd_show_stats(
             """
         ).fetchall()
 
-        for (label, mount_display, count, bytes_total) in drive_rows:
+        results["drives"] = []
+        for (label, mount_path, count, bytes_total) in drive_rows:
             results["drives"].append({
                 "label": label,
-                "mount": mount_display,
-                "file_count": count,
+                "mount_path": mount_path,
+                "file_count": int(count or 0),
                 "total_bytes": int(bytes_total or 0),
             })
 

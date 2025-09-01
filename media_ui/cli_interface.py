@@ -120,26 +120,21 @@ class MediaToolCLI:
         print(f"🔧 Working directory: {os.getcwd()}")
         print(f"🔧 Python path: {os.environ.get('PYTHONPATH', 'Not set')}")
 
-        argv = sys.argv[1:]
-        print(f"sys.argv = ['media-tool', *argv]  # argv={argv!r}")
+        print(f"🔧 argv -> {argv!r}")
 
         try:
             if self.mode == "import":
-                # Try calling main(argv). If signature doesn't accept argv, fall back to sys.argv.
                 from media_tool.main import main as media_tool_main  # re-import for clarity
+                buf_out, buf_err = io.StringIO(), io.StringIO()
+                old_argv = sys.argv
                 try:
-                    rc = media_tool_main(argv)  # type: ignore[arg-type]
-                    rc = 0 if rc is None else int(rc)
-                    return rc == 0, "", ""
-                except TypeError:
-                    old_argv = sys.argv
-                    try:
-                        sys.argv = ["media-tool", *argv]
+                    sys.argv = ["media-tool", *argv]
+                    with redirect_stdout(buf_out), redirect_stderr(buf_err):
                         rc = media_tool_main()
-                        rc = 0 if rc is None else int(rc)
-                        return rc == 0, "", ""
-                    finally:
-                        sys.argv = old_argv
+                    rc = 0 if rc is None else int(rc)
+                    return rc == 0, buf_out.getvalue(), buf_err.getvalue()
+                finally:
+                    sys.argv = old_argv
 
             elif self.mode == "exec":
                 cmd = [self.cli_target, *argv]  # e.g., /home/.../.venv/bin/media-tool
@@ -195,7 +190,17 @@ class MediaToolCLI:
             }
         
         try:
-            parsed = json.loads(stdout)
+            # tolerant JSON parse
+            try:
+                parsed = json.loads(stdout.strip())
+            except json.JSONDecodeError:
+                s = stdout
+                start = s.rfind('{')
+                end = s.rfind('}')
+                if start != -1 and end != -1 and end > start:
+                    parsed = json.loads(s[start:end+1])
+                else:
+                    raise
             print(f"✅ JSON parsed successfully")
             return parsed
         except json.JSONDecodeError as e:
