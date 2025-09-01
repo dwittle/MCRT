@@ -63,7 +63,7 @@ class FileDiscovery:
         
         # Recursive scan with progress tracking
         self._scan_recursive(
-            source, candidates, stats, scan_id, drive_id, 
+            source, candidates, self.scan_stats, scan_id, drive_id, 
             config, auto_checkpoint
         )
         
@@ -79,8 +79,8 @@ class FileDiscovery:
             )
         
         # Print discovery summary
-        self._print_discovery_summary(candidates, stats, elapsed)
-        
+        self._print_discovery_summary(candidates, self.scan_stats, elapsed)
+
         return candidates
     
     def _load_cached_candidates(self, candidates_file: str) -> List[Tuple[Path, int]]:
