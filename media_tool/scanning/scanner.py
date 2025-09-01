@@ -596,6 +596,14 @@ class OptimizedScanner:
         if not group_records:
             return
         
+        # Only create groups for files that actually have duplicates
+        if len(group_records) == 1:
+            # Single file - just insert without creating a group
+            with self.db_manager.get_connection() as conn:
+                self._insert_or_get_file(conn, group_records[0])
+                conn.commit()
+            return
+
         # Find the best original (largest resolution, then largest file size)
         original_record = max(group_records, key=lambda r: (r.pixels, r.size_bytes))
         
