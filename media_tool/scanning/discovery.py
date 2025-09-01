@@ -7,6 +7,7 @@ Handles recursive scanning of directories to find media files.
 """
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -15,6 +16,8 @@ from ..config import SUPPORTED_EXT, DEFAULT_SMALL_FILE_BYTES
 from ..models.checkpoint import ScanCheckpoint
 from ..checkpoint.manager import CheckpointManager
 from ..utils.time import utc_now_str
+
+logger = logging.getLogger(__name__)
 
 
 class FileDiscovery:
@@ -26,10 +29,8 @@ class FileDiscovery:
         'media_files_found': 0
     }
 
-
     def __init__(self, checkpoint_manager: Optional[CheckpointManager] = None):
         self.checkpoint_manager = checkpoint_manager
-    
     
     def discover_files(self, source: Path, skip_discovery: bool = False, 
                       scan_id: Optional[str] = None, drive_id: Optional[int] = None,
@@ -55,7 +56,7 @@ class FileDiscovery:
             return self._load_cached_candidates(candidates_file)
         
         # Perform fresh discovery
-        print(f"[{utc_now_str()}] Discovering media files in {source}...")
+        logger.info("Discovering media files in %s...", source)
         
         candidates = []
         
@@ -80,18 +81,18 @@ class FileDiscovery:
         
         # Print discovery summary
         self._print_discovery_summary(candidates, self.scan_stats, elapsed)
-
+        
         return candidates
     
     def _load_cached_candidates(self, candidates_file: str) -> List[Tuple[Path, int]]:
         """Load and validate cached candidate files."""
-        print(f"[{utc_now_str()}] Loading cached candidates from {candidates_file}...")
+        logger.info("Loading cached candidates from %s...", candidates_file)
         
         try:
             with open(candidates_file, 'r') as f:
                 cached_paths = json.load(f)
             
-            print("  - Validating cached paths...", end="", flush=True)
+            logger.debug("Validating cached paths...")
             valid_candidates = []
             invalid_count = 0
             
@@ -107,22 +108,18 @@ class FileDiscovery:
                     invalid_count += 1
                     continue
             
-            print(f" {len(valid_candidates):,} valid files")
-            if invalid_count > 0:
-                print(f"  - Skipped {invalid_count:,} invalid/missing cached files")
+            logger.info("Validated %d files, skipped %d invalid/missing", len(valid_candidates), invalid_count)
             
             return valid_candidates
             
         except Exception as e:
-            print(f"Error loading cached candidates: {e}")
-            print("Falling back to fresh discovery...")
+            logger.error("Error loading cached candidates: %s", e)
+            logger.info("Falling back to fresh discovery...")
             return []
     
     def _scan_recursive(self, path: Path, candidates: List[Tuple[Path, int]], 
-                       stats: dict, scan_id: Optional[str], drive_id: Optional[int],
+                       scan_stats: dict, scan_id: Optional[str], drive_id: Optional[int],
                        config: Optional[dict], auto_checkpoint: bool):
-
-
         """Recursively scan directory for media files."""
         try:
             with os.scandir(path) as entries:
@@ -131,14 +128,14 @@ class FileDiscovery:
 
                     # Progress reporting
                     if self.scan_stats['total_scanned'] % 10000 == 0:
-                        print(f"  - Scanned {self.scan_stats['total_scanned']:,} items, "
-                              f"found {len(candidates):,} media files...  path: {path}", flush=True)
+                        logger.info("Scanned %d items, found %d media files... path: %s", 
+                                  self.scan_stats['total_scanned'], len(candidates), path)
                         
                         # Periodic checkpoint during discovery
                         if (auto_checkpoint and self.checkpoint_manager and 
                             scan_id and self.scan_stats['total_scanned'] % 50000 == 0):
                             self._save_periodic_checkpoint(
-                                scan_id, path, drive_id, candidates, config, stats
+                                scan_id, path, drive_id, candidates, config, scan_stats
                             )
                     
                     # Process files
@@ -160,7 +157,7 @@ class FileDiscovery:
                     elif entry.is_dir():
                         try:
                             self._scan_recursive(
-                                Path(entry.path), candidates, stats, 
+                                Path(entry.path), candidates, scan_stats, 
                                 scan_id, drive_id, config, auto_checkpoint
                             )
                         except (PermissionError, OSError):
@@ -181,9 +178,9 @@ class FileDiscovery:
             candidate_paths = [str(path) for path, _ in candidates]
             with open(candidates_file, 'w') as f:
                 json.dump(candidate_paths, f)
-            print(f"  - Cached {len(candidates):,} candidates to {candidates_file}")
+            logger.debug("Cached %d candidates to %s", len(candidates), candidates_file)
         except Exception as e:
-            print(f"  - Warning: Could not cache candidates: {e}")
+            logger.warning("Could not cache candidates: %s", e)
     
     def _save_discovery_checkpoint(self, scan_id: str, source: Path, 
                                   drive_id: Optional[int], 
@@ -208,7 +205,7 @@ class FileDiscovery:
     def _save_periodic_checkpoint(self, scan_id: str, current_path: Path, 
                                  drive_id: Optional[int], 
                                  candidates: List[Tuple[Path, int]], 
-                                 config: Optional[dict], stats: dict):
+                                 config: Optional[dict], scan_stats: dict):
         """Save periodic checkpoint during discovery."""
         if not self.checkpoint_manager:
             return
@@ -226,14 +223,15 @@ class FileDiscovery:
         self.checkpoint_manager.save_checkpoint(checkpoint)
     
     def _print_discovery_summary(self, candidates: List[Tuple[Path, int]], 
-                                stats: dict, elapsed: float):
+                                scan_stats: dict, elapsed: float):
         """Print discovery completion summary."""
-        print(f"[{utc_now_str()}] Discovery complete: {len(candidates):,} media files")
-        print(f"  - Total scanned: {self.scan_stats['total_scanned']:,} items in {elapsed:.1f}s "
-              f"({self.scan_stats['total_scanned']/elapsed:.0f} items/s)")
+        logger.info("Discovery complete: %d media files", len(candidates))
+        logger.info("Total scanned: %d items in %.1fs (%.0f items/s)", 
+                   self.scan_stats['total_scanned'], elapsed, 
+                   self.scan_stats['total_scanned']/elapsed if elapsed > 0 else 0)
         
         if self.scan_stats['permission_errors'] > 0:
-            print(f"  - Permission errors: {self.scan_stats['permission_errors']:,}")
+            logger.warning("Permission errors: %d", self.scan_stats['permission_errors'])
         
         # File type breakdown
         if candidates:
@@ -243,14 +241,14 @@ class FileDiscovery:
             video_count = sum(1 for path, _ in candidates 
                             if path.suffix.lower() in VIDEO_EXT)
             
-            print(f"  - File types: {image_count:,} images, {video_count:,} videos")
+            logger.info("File types: %d images, %d videos", image_count, video_count)
             
             # Size statistics
             sizes = [size for _, size in candidates]
             total_gb = sum(sizes) / (1024**3)
             avg_mb = (sum(sizes) / len(sizes)) / (1024**2) if sizes else 0
             
-            print(f"  - Total size: {total_gb:.1f} GB (avg: {avg_mb:.1f} MB per file)")
+            logger.info("Total size: %.1f GB (avg: %.1f MB per file)", total_gb, avg_mb)
 
 
 class DirectoryWalker:

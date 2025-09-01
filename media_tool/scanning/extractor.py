@@ -6,6 +6,7 @@ Feature extraction for the Media Consolidation Tool.
 """
 
 import hashlib
+import logging
 import os
 import sys
 import warnings
@@ -21,6 +22,8 @@ from ..models.file_record import FileRecord
 # Suppress PIL warnings
 warnings.filterwarnings("ignore", category=UserWarning, 
                        message=".*Palette images with Transparency expressed in bytes.*")
+
+logger = logging.getLogger(__name__)
 
 
 class FeatureExtractor:
@@ -70,13 +73,13 @@ class FeatureExtractor:
                             record.phash = str(imagehash.phash(img))
                 except Exception as e:
                     # Debug why image processing is failing
-                    print(f"Image processing failed for {file_path}: {e}", file=sys.stderr)
+                    logger.debug("Image processing failed for %s: %s", file_path, e)
                     return None
             
             return record
             
         except Exception as e:
-            print(f"Error processing {file_path}: {e}", file=sys.stderr)
+            logger.error("Error processing %s: %s", file_path, e)
             return None
     
     def _compute_fast_fingerprint(self, path: Path, size_bytes: int) -> Optional[str]:

@@ -7,6 +7,7 @@ Checkpoint manager for resumable scans in the Media Consolidation Tool.
 
 import hashlib
 import json
+import logging
 import pickle
 import datetime as dt
 from pathlib import Path
@@ -16,6 +17,8 @@ from typing import Optional, List, Tuple
 from ..models.checkpoint import ScanCheckpoint
 from ..utils.path import ensure_dir
 from ..database.manager import DatabaseManager
+
+logger = logging.getLogger(__name__)
 
 
 class CheckpointManager:
@@ -55,7 +58,8 @@ class CheckpointManager:
             ))
             conn.commit()
         
-        print(f"  💾 Checkpoint saved: {checkpoint.stage} stage, {checkpoint.processed_count:,} items processed")
+        logger.info("Checkpoint saved: %s stage, %d items processed", 
+                   checkpoint.stage, checkpoint.processed_count)
         return checkpoint_file
     
     def load_checkpoint(self, scan_id: str) -> Optional[ScanCheckpoint]:
@@ -71,7 +75,7 @@ class CheckpointManager:
                 
                 checkpoint_file = Path(row[0])
                 if not checkpoint_file.exists():
-                    print(f"Warning: Checkpoint file {checkpoint_file} not found")
+                    logger.warning("Checkpoint file %s not found", checkpoint_file)
                     return None
                 
                 with checkpoint_file.open('rb') as f:
@@ -80,7 +84,7 @@ class CheckpointManager:
                 return checkpoint
                 
         except Exception as e:
-            print(f"Error loading checkpoint {scan_id}: {e}")
+            logger.error("Error loading checkpoint %s: %s", scan_id, e)
             return None
     
     def list_checkpoints(self, source_path: Optional[str] = None) -> List[Tuple[str, str, str, str, int]]:
@@ -119,7 +123,7 @@ class CheckpointManager:
                 conn.commit()
                 
         except Exception as e:
-            print(f"Warning: Failed to cleanup checkpoint {scan_id}: {e}")
+            logger.warning("Failed to cleanup checkpoint %s: %s", scan_id, e)
     
     def cleanup_old_checkpoints(self, days: int = 7):
         """Clean up checkpoints older than specified days."""
@@ -141,4 +145,4 @@ class CheckpointManager:
             conn.execute("DELETE FROM scan_checkpoints WHERE timestamp < ?", (cutoff_str,))
             conn.commit()
             
-            print(f"Cleaned up {len(old_checkpoints)} old checkpoints")
+            logger.info("Cleaned up %d old checkpoints", len(old_checkpoints))

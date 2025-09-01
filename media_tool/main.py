@@ -20,18 +20,29 @@ from .commands.review import (
     cmd_bulk_mark, cmd_review_queue, cmd_export_backup_list
 )
 from .commands.stats import cmd_show_stats
-from .jsonio import enable_json_logging
 
 
-def setup_logging(verbose: bool):
+def setup_logging(verbose: bool, json_mode: bool = False):
     """Configure logging for the CLI tool."""
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)]
-    )
-    logging.debug("Verbose logging enabled (DEBUG level).")
+    if json_mode:
+        # For JSON mode: send ALL logs to stderr, keep stdout clean for JSON
+        level = logging.DEBUG if verbose else logging.INFO
+        logging.basicConfig(
+            level=level,
+            format="[DEBUG] %(asctime)s [%(levelname)s] %(name)s: %(message)s" if verbose else "[%(levelname)s] %(message)s",
+            handlers=[logging.StreamHandler(sys.stderr)]
+        )
+    else:
+        # For human-readable mode: logs go to stdout as before
+        level = logging.DEBUG if verbose else logging.INFO
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s [%(levelname)s] %(message)s",
+            handlers=[logging.StreamHandler(sys.stdout)]
+        )
+    
+    if verbose:
+        logging.debug("Verbose logging enabled (DEBUG level).")
 
 
 def create_parser():
@@ -41,20 +52,20 @@ def create_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
   # Scan a drive with checkpoint support
-  %(prog)s scan --source /mnt/photos --central ./data --workers 4
+  %(prog)s --db media_index.db scan --source "$(pwd)/photos" --central ./data --workers 4
   
   # Resume interrupted scan
-  %(prog)s scan --source /mnt/photos --central ./data --resume-scan-id scan_20241210_143012_a1b2c3d4
+  %(prog)s --db media_index.db scan --source "$(pwd)/photos" --central ./data --resume-scan-id scan_20241210_143012_a1b2c3d4
   
   # Checkpoint management
-  %(prog)s list-checkpoints --json
-  %(prog)s checkpoint-info --scan-id scan_20241210_143012_a1b2c3d4 --json
-  %(prog)s cleanup-checkpoints --days 7 --json
+  %(prog)s --db media_index.db list-checkpoints --json
+  %(prog)s --db media_index.db checkpoint-info --scan-id scan_20241210_143012_a1b2c3d4 --json
+  %(prog)s --db media_index.db cleanup-checkpoints --days 7 --json
   
   # Review workflow
-  %(prog)s review-queue --limit 50 --json
-  %(prog)s mark --file-id 123 --status keep --json
-  %(prog)s export-backup-list --out backup.csv --json
+  %(prog)s --db media_index.db review-queue --limit 50 --json
+  %(prog)s --db media_index.db mark --file-id 123 --status keep --json
+  %(prog)s --db media_index.db export-backup-list --out backup.csv --json
         """
     )
     
@@ -82,7 +93,7 @@ def _add_scan_parser(subparsers):
     """Add scan command parser."""
     scan_parser = subparsers.add_parser("scan", help="Scan source path for media files")
     scan_parser.add_argument("--source", required=True,
-                           help="Source path to scan (drive mount point)")
+                           help="Source path to scan (must be absolute)")
     scan_parser.add_argument("--central", required=True,
                            help="Central storage directory")
     scan_parser.add_argument("--wsl-hfs-mode", action="store_true",
@@ -213,12 +224,11 @@ def main():
     parser = create_parser()
     args = parser.parse_args()
     
-    # Setup logging based on --verbose (but suppress if JSON output requested)
-    if getattr(args, 'json', False):
-        # For JSON output, send logs to stderr and suppress info noise
-        enable_json_logging()
-    else:
-        setup_logging(args.verbose)
+    # Detect JSON mode from any command that has --json flag
+    json_mode = getattr(args, 'json', False)
+    
+    # Setup logging based on verbosity and JSON mode
+    setup_logging(args.verbose, json_mode)
     
     logging.debug("Parsed arguments: %s", args)
     
@@ -243,7 +253,7 @@ def main():
         # Execute commands
         if args.command == "scan":
             logging.info("Starting scan command.")
-
+            
             # Validate that source path is absolute
             source_path = Path(args.source)
             if not source_path.is_absolute():
@@ -253,11 +263,15 @@ def main():
                     return error(args.command, error_msg, code=1)
                 else:
                     logging.error(error_msg)
-                    print(f"Error: {error_msg}")
-                    print(f"Use: media-tool --db {args.db} scan --source \"$(pwd)/{args.source}\" --central {args.central}")
+                    print(f"Error: {error_msg}", file=sys.stderr)
+                    print(f"Use: media-tool --db {args.db} scan --source \"$(pwd)/{args.source}\" --central {args.central}", file=sys.stderr)
                     sys.exit(1)
-
+            
+            # Validate that central path exists or can be created
             central_path = Path(args.central)
+            if not central_path.is_absolute():
+                logging.warning("Central path is relative: %s. Consider using an absolute path.", args.central)
+            
             scanner = ScanCommand(db_path, central_path)
             
             scanner.execute(
@@ -343,7 +357,7 @@ def main():
         else:
             logging.warning("Operation interrupted by user.")
             if args.command == "scan" and hasattr(args, 'resume_scan_id') and not args.no_checkpoints:
-                print("💡 You can resume this scan later using the checkpoint system.")
+                print("Resume this scan later using the checkpoint system.", file=sys.stderr)
             sys.exit(130)
     except Exception as e:
         if getattr(args, 'json', False):

@@ -15,12 +15,16 @@ def success(command: str, data: Dict[str, Any] | list | None = None,
     payload = {"result": "success", "command": command, "data": data if data is not None else {}}
     if meta:
         payload["meta"] = meta
-    print(json.dumps(payload, ensure_ascii=False))
+    # Always print JSON to stdout, logs go to stderr
+    print(json.dumps(payload, ensure_ascii=False), file=sys.stdout)
+    sys.stdout.flush()  # Ensure immediate output
     return code
 
 def error(command: str, message: str, debug: Optional[Dict[str, Any]] = None, code: int = 1) -> int:
     payload = {"result": "error", "command": command, "error": message}
     if debug:
         payload["debug"] = debug
-    print(json.dumps(payload, ensure_ascii=False))
+    # Always print JSON to stdout, logs go to stderr
+    print(json.dumps(payload, ensure_ascii=False), file=sys.stdout)
+    sys.stdout.flush()  # Ensure immediate output
     return code

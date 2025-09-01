@@ -36,6 +36,8 @@ class MediaToolCLI:
             else self.cli_target if self.mode == "exec"
             else "module:media_tool"
         )
+
+        
         self.db_path = self._find_db_path(db_path)
 
         print("🔧 CLI Interface initialized:")

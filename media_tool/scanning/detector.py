@@ -5,6 +5,7 @@
 Duplicate detection for the Media Consolidation Tool.
 """
 
+import logging
 from collections import defaultdict
 from typing import Dict, Set, Optional, Tuple
 
@@ -13,6 +14,8 @@ import imagehash
 from ..database.manager import DatabaseManager
 from ..models.file_record import FileRecord
 from ..utils.time import utc_now_str
+
+logger = logging.getLogger(__name__)
 
 
 class DuplicateDetector:
@@ -27,11 +30,11 @@ class DuplicateDetector:
     
     def _refresh_indices(self):
         """Load existing data into memory for fast lookups."""
-        print(f"[{utc_now_str()}] Loading existing file indices...")
+        logger.info("Loading existing file indices...")
         
         with self.db_manager.get_connection() as conn:
             # SHA index for exact duplicates
-            print("  - Loading SHA hash index...", end="", flush=True)
+            logger.debug("Loading SHA hash index...")
             sha_rows = conn.execute("""
                 SELECT f.hash_sha256, f.group_id 
                 FROM files f 
@@ -40,10 +43,10 @@ class DuplicateDetector:
             
             for sha, group_id in sha_rows:
                 self._sha_to_group[sha] = group_id
-            print(f" {len(sha_rows):,} entries")
+            logger.debug("Loaded %d SHA hash entries", len(sha_rows))
             
             # Phash index for similar images
-            print("  - Loading perceptual hash index...", end="", flush=True)
+            logger.debug("Loading perceptual hash index...")
             phash_rows = conn.execute("""
                 SELECT f.phash, f.group_id 
                 FROM files f 
@@ -53,10 +56,10 @@ class DuplicateDetector:
             for phash, group_id in phash_rows:
                 if phash:
                     self._phash_groups[phash].add(group_id)
-            print(f" {len(phash_rows):,} entries")
+            logger.debug("Loaded %d perceptual hash entries", len(phash_rows))
             
             # Size+fingerprint buckets
-            print("  - Loading size+fingerprint buckets...", end="", flush=True)
+            logger.debug("Loading size+fingerprint buckets...")
             bucket_rows = conn.execute("""
                 SELECT size_bytes, fast_fp 
                 FROM files 
@@ -65,9 +68,9 @@ class DuplicateDetector:
             
             for size, fp in bucket_rows:
                 self._size_fp_buckets.add((size, fp))
-            print(f" {len(bucket_rows):,} entries")
+            logger.debug("Loaded %d size+fingerprint buckets", len(bucket_rows))
             
-        print(f"[{utc_now_str()}] Index loading complete")
+        logger.info("Index loading complete")
     
     def find_duplicate_group(self, record: FileRecord, phash_threshold: int = 5) -> Optional[int]:
         """Find existing group for this record, if any."""
